@@ -31,6 +31,7 @@ pub mod model;
 pub mod packer;
 pub mod strings;
 pub mod wasm;
+pub mod wasm_ops;
 #[cfg(feature = "yara")]
 pub mod yara;
 

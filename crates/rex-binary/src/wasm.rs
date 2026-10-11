@@ -98,6 +98,24 @@ pub struct Memory {
     pub shared: bool,
 }
 
+/// Location of one function body in the file.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Body {
+    /// File offset of the first byte of the body (the local-declarations vector).
+    pub offset: usize,
+    /// Size in bytes.
+    pub size: usize,
+}
+
+/// A function signature: parameter and result value-type bytes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FuncType {
+    /// Parameter types.
+    pub params: Vec<u8>,
+    /// Result types.
+    pub results: Vec<u8>,
+}
+
 /// A parsed module.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Module {
@@ -119,6 +137,12 @@ pub struct Module {
     pub start: Option<u32>,
     /// Byte size of each function body, in definition order.
     pub body_sizes: Vec<usize>,
+    /// Where each function body starts, in definition order.
+    pub bodies: Vec<Body>,
+    /// Function signatures from the type section.
+    pub types: Vec<FuncType>,
+    /// Type index of every function, imports first (the function index space).
+    pub func_types: Vec<u32>,
     /// Active/passive data segments.
     pub data_segments: usize,
     /// Function names from the `name` custom section: index → name.
@@ -129,19 +153,19 @@ pub struct Module {
     pub custom: Vec<String>,
 }
 
-struct R<'a> {
-    d: &'a [u8],
-    p: usize,
+pub(crate) struct R<'a> {
+    pub(crate) d: &'a [u8],
+    pub(crate) p: usize,
 }
 
 impl<'a> R<'a> {
-    fn new(d: &'a [u8], p: usize) -> Self {
+    pub(crate) fn new(d: &'a [u8], p: usize) -> Self {
         Self { d, p }
     }
-    fn eof(&self) -> bool {
+    pub(crate) fn eof(&self) -> bool {
         self.p >= self.d.len()
     }
-    fn u8(&mut self) -> Result<u8> {
+    pub(crate) fn u8(&mut self) -> Result<u8> {
         let b = *self
             .d
             .get(self.p)
@@ -149,7 +173,7 @@ impl<'a> R<'a> {
         self.p += 1;
         Ok(b)
     }
-    fn leb(&mut self) -> Result<u64> {
+    pub(crate) fn leb(&mut self) -> Result<u64> {
         let (mut v, mut shift) = (0u64, 0u32);
         loop {
             let b = self.u8()?;
@@ -165,17 +189,37 @@ impl<'a> R<'a> {
             }
         }
     }
-    fn u32(&mut self) -> Result<u32> {
+    /// Signed LEB128 (up to 64 bits).
+    pub(crate) fn sleb(&mut self) -> Result<i64> {
+        let (mut v, mut shift) = (0i64, 0u32);
+        loop {
+            let b = self.u8()?;
+            if shift < 64 {
+                v |= i64::from(b & 0x7f) << shift;
+            }
+            shift += 7;
+            if b & 0x80 == 0 {
+                if shift < 64 && b & 0x40 != 0 {
+                    v |= -1i64 << shift;
+                }
+                return Ok(v);
+            }
+            if shift > 70 {
+                return Err(Error::parse("WASM", "LEB128 too long"));
+            }
+        }
+    }
+    pub(crate) fn u32(&mut self) -> Result<u32> {
         u32::try_from(self.leb()?).map_err(|_| Error::parse("WASM", "u32 out of range"))
     }
-    fn count(&mut self) -> Result<usize> {
+    pub(crate) fn count(&mut self) -> Result<usize> {
         let n = self.u32()? as usize;
         if n > MAX_ITEMS || n > self.d.len() {
             return Err(Error::parse("WASM", format!("implausible item count {n}")));
         }
         Ok(n)
     }
-    fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
+    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         let end = self
             .p
             .checked_add(n)
@@ -242,6 +286,10 @@ pub fn parse(data: &[u8]) -> Result<Module> {
                 // Custom sections are advisory: a malformed one must not hide the rest.
                 let _ = custom_section(&mut m, &n, &mut s);
             }
+            1 => {
+                // Unknown type forms (GC proposal) end the list; later sections stay readable.
+                let _ = type_section(&mut m, &mut s);
+            }
             2 => {
                 for _ in 0..s.count()? {
                     let (module, field) = (s.name()?, s.name()?);
@@ -249,7 +297,7 @@ pub fn parse(data: &[u8]) -> Result<Module> {
                         .ok_or_else(|| Error::parse("WASM", "bad import kind"))?;
                     match kind {
                         ExternKind::Func => {
-                            s.u32()?;
+                            m.func_types.push(s.u32()?);
                             m.imported_functions += 1;
                         }
                         ExternKind::Table => {
@@ -275,7 +323,12 @@ pub fn parse(data: &[u8]) -> Result<Module> {
                     });
                 }
             }
-            3 => m.defined_functions = s.count()?,
+            3 => {
+                m.defined_functions = s.count()?;
+                for _ in 0..m.defined_functions {
+                    m.func_types.push(s.u32()?);
+                }
+            }
             5 => {
                 for _ in 0..s.count()? {
                     let (min, max, shared) = limits(&mut s)?;
@@ -298,6 +351,10 @@ pub fn parse(data: &[u8]) -> Result<Module> {
             10 => {
                 for _ in 0..s.count()? {
                     let n = s.u32()? as usize;
+                    m.bodies.push(Body {
+                        offset: offset + s.p,
+                        size: n,
+                    });
                     s.bytes(n)?;
                     m.body_sizes.push(n);
                 }
@@ -313,6 +370,23 @@ pub fn parse(data: &[u8]) -> Result<Module> {
         });
     }
     Ok(m)
+}
+
+fn type_section(m: &mut Module, s: &mut R) -> Result<()> {
+    for _ in 0..s.count()? {
+        if s.u8()? != 0x60 {
+            return Err(Error::parse("WASM", "unsupported type form"));
+        }
+        let mut t = FuncType::default();
+        for _ in 0..s.count()? {
+            t.params.push(s.u8()?);
+        }
+        for _ in 0..s.count()? {
+            t.results.push(s.u8()?);
+        }
+        m.types.push(t);
+    }
+    Ok(())
 }
 
 fn custom_section(m: &mut Module, name: &str, s: &mut R) -> Result<()> {
@@ -362,11 +436,49 @@ impl Module {
             .unwrap_or_else(|| format!("func_{idx}"))
     }
 
+    /// Display label for a function index: `module.name` for imports, otherwise [`Self::func_name`].
+    pub fn label(&self, idx: u32) -> String {
+        if (idx as usize) < self.imported_functions {
+            if let Some(i) = self
+                .imports
+                .iter()
+                .filter(|i| i.kind == ExternKind::Func)
+                .nth(idx as usize)
+            {
+                return format!("{}.{}", i.module, i.name);
+            }
+        }
+        self.func_name(idx)
+    }
+
+    /// Human signature such as `(i32, i32) -> i32` for a function index.
+    pub fn signature(&self, idx: u32) -> Option<String> {
+        let t = self
+            .types
+            .get(*self.func_types.get(idx as usize)? as usize)?;
+        let list = |v: &[u8]| v.iter().map(|b| valtype(*b)).collect::<Vec<_>>().join(", ");
+        Some(format!("({}) -> ({})", list(&t.params), list(&t.results)))
+    }
+
     /// Does the module carry debug information?
     pub fn has_debug_info(&self) -> bool {
         self.custom.iter().any(|c| {
             c.starts_with(".debug_") || c == "external_debug_info" || c == "sourceMappingURL"
         })
+    }
+}
+
+/// Name of a value-type byte.
+pub fn valtype(b: u8) -> &'static str {
+    match b {
+        0x7f => "i32",
+        0x7e => "i64",
+        0x7d => "f32",
+        0x7c => "f64",
+        0x7b => "v128",
+        0x70 => "funcref",
+        0x6f => "externref",
+        _ => "?",
     }
 }
 
@@ -416,7 +528,7 @@ pub(crate) mod tests {
     /// a start function, two function bodies, a data segment, names and producers sections.
     pub fn sample() -> Vec<u8> {
         let mut w = b"\0asm\x01\0\0\0".to_vec();
-        section(1, &[1, 0x60, 0, 0], &mut w); // type: () -> ()
+        section(1, &[2, 0x60, 0, 0, 0x60, 1, 0x7f, 1, 0x7f], &mut w); // types: () -> (), (i32) -> i32
         let mut imp = Vec::new();
         leb(3, &mut imp);
         for (m, f) in [
@@ -429,7 +541,7 @@ pub(crate) mod tests {
             imp.extend([0, 0]); // func, type 0
         }
         section(2, &imp, &mut w);
-        section(3, &[2, 0, 0], &mut w); // two defined functions
+        section(3, &[2, 0, 1], &mut w); // two defined functions: run () and decrypt_config (i32) -> i32
         section(5, &[1, 0, 1], &mut w); // memory: min 1, no max
         let mut exp = Vec::new();
         leb(2, &mut exp);
@@ -439,7 +551,16 @@ pub(crate) mod tests {
         exp.extend([0, 3]); // func index 3 (after 3 imports)
         section(7, &exp, &mut w);
         section(8, &[3], &mut w); // start = func 3
-        section(10, &[2, 2, 0, 0x0b, 4, 0, 0x01, 0x01, 0x0b], &mut w); // two bodies (sizes 2 and 4)
+        // run: three imported calls, then decrypt_config(42); decrypt_config: a counting loop with br_if.
+        section(
+            10,
+            &[
+                2, 0x0d, 0, 0x10, 0, 0x10, 1, 0x10, 2, 0x41, 0x2a, 0x10, 4, 0x1a, 0x0b, 0x15, 1, 1,
+                0x7f, 3, 0x40, 0x20, 1, 0x41, 1, 0x6a, 0x22, 1, 0x20, 0, 0x49, 0x0d, 0, 0x0b, 0x20,
+                1, 0x0b,
+            ],
+            &mut w,
+        );
         let mut data = vec![1, 0, 0x41, 0, 0x0b];
         leb(5, &mut data);
         data.extend(b"hello");
@@ -479,7 +600,7 @@ pub(crate) mod tests {
         assert_eq!(m.imports.len(), 3);
         assert_eq!(m.imported_functions, 3);
         assert_eq!(m.defined_functions, 2);
-        assert_eq!(m.body_sizes, vec![2, 4]);
+        assert_eq!(m.body_sizes, vec![13, 21]);
         assert_eq!(m.start, Some(3));
         assert_eq!(m.data_segments, 1);
         assert!(m.memories[0].max.is_none() && m.memories[0].min == 1);
@@ -514,5 +635,16 @@ pub(crate) mod tests {
             x[i] ^= 0xa5;
             let _ = parse(&x);
         }
+    }
+
+    #[test]
+    fn committed_lab_matches_the_unit_test_module() {
+        let lab =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../labs/wasm/sample.wasm");
+        assert_eq!(
+            std::fs::read(&lab).unwrap(),
+            sample(),
+            "labs/wasm/make_wasm.py and wasm::tests::sample() have drifted apart"
+        );
     }
 }

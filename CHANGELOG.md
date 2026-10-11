@@ -23,3 +23,5 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
   attestations on releases, GitHub Pages workflow for the handbook.
 - Handbook: showcase, FAQ and trust, WebAssembly, Electron, and AI-agent chapters.
 - AArch64 and 32-bit ARM (ARM mode) function discovery, CFGs, call graph, PLT import resolution, string references and `main` inference (feature `multiarch`); functions no longer run on into the next function or the PLT after a call to an unknown no-return function.
+- WebAssembly instruction disassembly (`rex disasm`/`rex xrefs` on `.wasm`), resolved branch targets and per-import call sites.
+- Release workflow can be rehearsed (`workflow_dispatch`) and smoke-tests `install.sh` against the built assets.
