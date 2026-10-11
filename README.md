@@ -34,7 +34,7 @@ what's risky about it, and where to look next*, then hands you off to Ghidra, a 
 | **Firmware & blobs** | binwalk-style carving with per-format validators and exact sizing, entropy profile, extraction (gzip/uImage unwrapping), embedded credential and key checks |
 | **Patch analysis** | Function-level binary diff: matches by name, instruction hash, then trigram similarity; flags small surgical changes |
 | **Android** | APK triage: binary manifest decoder, exported components (incl. implicit exports), deep links, permissions, DEX parser with checksum/signature validation, risky-API rules, TLS trust classes, native-lib hardening, signing |
-| **Desktop & portable code** | **Electron `app.asar`**: BrowserWindow security settings (`nodeIntegration`, `contextIsolation`, `sandbox`…), the full IPC channel table, embedded secrets, source maps, native addons, bundled dependencies, safe extraction. **WebAssembly**: sections, imports/exports, WASI reach, memory limits, debug info, largest functions |
+| **Desktop & portable code** | **Electron `app.asar`**: BrowserWindow security settings (`nodeIntegration`, `contextIsolation`, `sandbox`…), the full IPC channel table, embedded secrets, source maps, native addons, bundled dependencies, safe extraction. **WebAssembly**: sections, imports/exports, WASI reach with call sites, memory limits, debug info, largest functions, instruction-level disassembly (`rex disasm x.wasm -F fn`) |
 | **Web & APIs** | **HAR to OpenAPI 3.1** with path templating, JSON-schema inference, auth schemes; passive traffic audit (JWT decoding, cookies, CORS, cleartext); JS bundle analysis (endpoints with methods, secrets, sinks); source-map unpacking with path-traversal protection |
 | **Codebases** | tree-sitter symbol extraction (Rust, Python, JS/TS, Go, Java), cross-language import graph, PageRank "read this first" ranking, routes for 11 web frameworks, entry points, stack detection, churn x complexity hotspots, bus factor, security smells |
 | **AI (optional)** | `--ai` briefings, `rex ai explain`, `rex ai name` via Claude or a local Ollama model; **secrets redacted before sending**; off unless you ask. **MCP server** (`rex mcp`) so agents can drive every analysis |
@@ -145,7 +145,7 @@ make -C labs && mdbook serve docs
 - Control-flow recovery and function diffing are **x86/x64 only**. Other architectures get linear disassembly (Capstone).
 - Heuristics (capabilities, packer score, secret patterns) produce **leads, not verdicts**. Findings say why they fired.
 - Obfuscated or virtualised code defeats static analysis; unpack or trace dynamically first.
-- WebAssembly is analysed structurally (imports, exports, sizes), not disassembled; pair it with WABT or Ghidra.
+- WebAssembly is disassembled (with branch targets and import call sites) but not decompiled, and `call_indirect` targets are not resolved; pair it with WABT or Ghidra.
 - Electron checks are pattern-based: a setting computed at runtime or hidden behind minified indirection is invisible,
   and executable-level protections (fuses) are out of view.
 - HAR-derived specs describe **observed** traffic only. Review before publishing.

@@ -258,6 +258,9 @@ pub fn disasm(
     addr: Option<u64>,
     count: usize,
 ) -> Result<String> {
+    if a.kind() == ArtifactKind::Wasm {
+        return wasm_disasm(a, function);
+    }
     let (b, p) = program(a, opts)?;
     if p.unsupported_arch {
         #[cfg(feature = "multiarch")]
@@ -309,6 +312,107 @@ pub fn disasm(
     Ok(rex_binary::disasm::listing(&insns, &comments))
 }
 
+/// Resolve a WebAssembly function by index (`4`, `func_4`), `module.name` (imports) or name.
+fn wasm_resolve(m: &rex_binary::wasm::Module, q: &str) -> Option<u32> {
+    let total = (m.imported_functions + m.defined_functions) as u32;
+    let q = q.trim_start_matches('$');
+    if let Some(n) = q
+        .strip_prefix("func_")
+        .unwrap_or(q)
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n < total)
+    {
+        return Some(n);
+    }
+    if let Some(n) = m
+        .imports
+        .iter()
+        .filter(|i| i.kind == rex_binary::wasm::ExternKind::Func)
+        .position(|i| i.name == q)
+    {
+        return Some(n as u32);
+    }
+    (0..total).find(|&i| m.label(i) == q || m.func_name(i) == q)
+}
+
+fn wasm_disasm(a: &Artifact, function: Option<&str>) -> Result<String> {
+    let m = rex_binary::wasm::parse(a.data())?;
+    let idx = match function {
+        Some(f) => wasm_resolve(&m, f)
+            .ok_or_else(|| Error::Other(format!("no function '{f}' (try `rex analyze`)")))?,
+        None => m
+            .start
+            .or_else(|| {
+                m.exports
+                    .iter()
+                    .find(|e| e.kind == rex_binary::wasm::ExternKind::Func)
+                    .map(|e| e.index)
+            })
+            .ok_or_else(|| {
+                Error::Other("module has no start or exported function; pass -F".into())
+            })?,
+    };
+    Ok(rex_binary::wasm_ops::disassemble(&m, a.data(), idx)?.render())
+}
+
+fn wasm_xrefs(a: &Artifact, target: &str) -> Result<Report> {
+    let start = Instant::now();
+    let m = rex_binary::wasm::parse(a.data())?;
+    let idx = wasm_resolve(&m, target)
+        .ok_or_else(|| Error::Other(format!("no function or import '{target}'")))?;
+    let edges = rex_binary::wasm_ops::call_edges(&m, a.data());
+    let mut rep = new_report(format!("rex xrefs: {target} in {}", a.name()), a);
+    let kind = if (idx as usize) < m.imported_functions {
+        "import"
+    } else {
+        "defined"
+    };
+    rep.push(Section::kv(
+        "xrefs.target",
+        "Function",
+        [
+            ("Name".to_string(), m.label(idx)),
+            ("Index".to_string(), idx.to_string()),
+            ("Kind".to_string(), kind.to_string()),
+        ],
+    ));
+    let mut callers: Vec<u32> = edges
+        .iter()
+        .filter(|(_, c)| *c == idx)
+        .map(|(f, _)| *f)
+        .collect();
+    callers.dedup();
+    rep.push(Section::table(
+        "xrefs.callers",
+        "Called by",
+        &["index", "function"],
+        callers
+            .iter()
+            .map(|c| vec![c.to_string(), m.label(*c)])
+            .collect(),
+        0,
+    ));
+    let mut callees: Vec<u32> = edges
+        .iter()
+        .filter(|(f, _)| *f == idx)
+        .map(|(_, c)| *c)
+        .collect();
+    callees.dedup();
+    rep.push(Section::table(
+        "xrefs.callees",
+        "Calls",
+        &["index", "function"],
+        callees
+            .iter()
+            .map(|c| vec![c.to_string(), m.label(*c)])
+            .collect(),
+        0,
+    ));
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
 /// CFG of a function in `dot` or `mermaid`.
 pub fn cfg(a: &Artifact, opts: &AnalysisOptions, function: &str, format: &str) -> Result<String> {
     let (_, p) = program(a, opts)?;
@@ -345,6 +449,9 @@ pub fn callgraph(
 /// Cross-references: callers/callees of a function, or functions referencing a string.
 pub fn xrefs(a: &Artifact, opts: &AnalysisOptions, target: &str) -> Result<Report> {
     let start = Instant::now();
+    if a.kind() == ArtifactKind::Wasm {
+        return wasm_xrefs(a, target);
+    }
     let (_, p) = program(a, opts)?;
     let mut rep = new_report(format!("rex xrefs: {target} in {}", a.name()), a);
     if let Some(f) = p.find(target) {
@@ -1004,5 +1111,36 @@ mod tests {
         let r = sourcemap_unpack(&js, out.path()).unwrap();
         assert!(r.section("sourcemap").is_some());
         assert!(out.path().join("src/config.ts").exists());
+    }
+
+    #[test]
+    fn wasm_disasm_and_xrefs_resolve_names_indices_and_imports() {
+        let data = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../labs/wasm/sample.wasm"),
+        )
+        .unwrap();
+        let a = Artifact::from_bytes("sample.wasm", data);
+        let o = AnalysisOptions::default();
+        let text = disasm(&a, &o, Some("decrypt_config"), None, 0).unwrap();
+        assert!(text.contains("br_if 0  ;; -> loop"), "{text}");
+        assert_eq!(
+            disasm(&a, &o, Some("4"), None, 0).unwrap(),
+            text,
+            "index works too"
+        );
+        assert!(
+            disasm(&a, &o, None, None, 0).unwrap().contains("$run"),
+            "defaults to start"
+        );
+        assert!(disasm(&a, &o, Some("nope"), None, 0).is_err());
+
+        for q in ["path_open", "wasi_snapshot_preview1.path_open", "0"] {
+            let r = xrefs(&a, &o, q).unwrap();
+            let callers = serde_json::to_string(r.section("xrefs.callers").unwrap()).unwrap();
+            assert!(callers.contains("run"), "{q}: {callers}");
+        }
+        let r = xrefs(&a, &o, "run").unwrap();
+        let callees = serde_json::to_string(r.section("xrefs.callees").unwrap()).unwrap();
+        assert!(callees.contains("decrypt_config") && callees.contains("sock_connect"));
     }
 }
