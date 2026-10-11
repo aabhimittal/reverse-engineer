@@ -22,3 +22,4 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `install.sh` (SHA-256 verified), cargo-binstall metadata, Homebrew formula generator, build-provenance
   attestations on releases, GitHub Pages workflow for the handbook.
 - Handbook: showcase, FAQ and trust, WebAssembly, Electron, and AI-agent chapters.
+- `scripts/build-demo.py` and `docs/demo/template.html`: a demo page generated from real `rex` runs on the labs (findings, tables, disassembly, CFGs, agent setup).
