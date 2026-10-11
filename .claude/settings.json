@@ -1,0 +1,56 @@
+{
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": { "source": "github", "repo": "DietrichGebert/ponytail" }
+    },
+    "caveman": {
+      "source": { "source": "github", "repo": "JuliusBrussee/caveman" }
+    },
+    "mattpocock": {
+      "source": { "source": "github", "repo": "mattpocock/skills" }
+    },
+    "anthropic-agent-skills": {
+      "source": { "source": "github", "repo": "anthropics/skills" }
+    },
+    "claude-plugins-official": {
+      "source": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+    },
+    "trailofbits": {
+      "source": { "source": "github", "repo": "trailofbits/skills" }
+    }
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "caveman@caveman": true,
+    "mattpocock-skills@mattpocock": true,
+    "code-review@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true,
+    "example-skills@anthropic-agent-skills": true,
+    "explanatory-output-style@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "trailmark@trailofbits": true,
+    "dwarf-expert@trailofbits": true,
+    "yara-authoring@trailofbits": true,
+    "variant-analysis@trailofbits": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "hookify@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "semgrep@claude-plugins-official": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
