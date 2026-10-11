@@ -24,6 +24,7 @@ mod error;
 mod finding;
 pub mod hash;
 mod report;
+pub mod secrets;
 
 pub use analyzer::{AnalysisOptions, Analyzer, AnalyzerOutput, Registry};
 pub use artifact::{Artifact, DEFAULT_MAX_SIZE};

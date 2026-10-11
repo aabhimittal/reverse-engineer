@@ -566,13 +566,7 @@ impl Analyzer for Strings {
 
 /// Mask the middle of a secret so reports don't re-leak it.
 pub fn redact(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= 10 {
-        return "*".repeat(chars.len());
-    }
-    let head: String = chars[..6].iter().collect();
-    let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("{head}…{tail} ({} chars)", chars.len())
+    rex_core::secrets::mask(s)
 }
 
 // ───────────────────────────── functions ─────────────────────────────

@@ -12,18 +12,7 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-/// A secret-pattern hit.
-#[derive(Debug, Clone, Serialize)]
-pub struct SecretHit {
-    /// Pattern name.
-    pub kind: &'static str,
-    /// Matched text (unmasked; callers mask before display).
-    pub value: String,
-    /// 1-based line.
-    pub line: u32,
-    /// Severity hint.
-    pub high: bool,
-}
+pub use rex_core::secrets::SecretHit;
 
 /// Result of analysing a bundle.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -60,7 +49,6 @@ struct Pats {
     env: Regex,
     smap: Regex,
     method: Regex,
-    secrets: Vec<(&'static str, Regex, bool)>,
 }
 
 fn pats() -> &'static Pats {
@@ -73,38 +61,7 @@ fn pats() -> &'static Pats {
         env: Regex::new(r"\b(?:process\.env|import\.meta\.env)\.([A-Z][A-Z0-9_]{2,})").unwrap(),
         smap: Regex::new(r"[#@]\s*sourceMappingURL=(\S+)").unwrap(),
         method: Regex::new(r#"(?i)\bmethod\s*:\s*["'`](get|post|put|patch|delete|head)["'`]"#).unwrap(),
-        secrets: vec![
-            ("AWS access key id", Regex::new(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b").unwrap(), true),
-            ("Google API key", Regex::new(r"\bAIza[0-9A-Za-z\-_]{35}\b").unwrap(), false),
-            ("GitHub token", Regex::new(r"\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,})\b").unwrap(), true),
-            ("Slack token", Regex::new(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b").unwrap(), true),
-            ("Slack webhook", Regex::new(r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+").unwrap(), true),
-            ("Stripe secret key", Regex::new(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{20,}\b").unwrap(), true),
-            ("Stripe publishable key", Regex::new(r"\bpk_live_[0-9a-zA-Z]{20,}\b").unwrap(), false),
-            ("Twilio API key", Regex::new(r"\bSK[0-9a-f]{32}\b").unwrap(), true),
-            ("SendGrid API key", Regex::new(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b").unwrap(), true),
-            ("Mailgun API key", Regex::new(r"\bkey-[0-9a-f]{32}\b").unwrap(), true),
-            ("Sentry DSN", Regex::new(r"https://[0-9a-f]{32}@[a-z0-9.\-]+/\d+").unwrap(), false),
-            ("Mapbox token", Regex::new(r"\b(?:pk|sk)\.eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b").unwrap(), false),
-            ("OpenAI API key", Regex::new(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{32,}\b").unwrap(), true),
-            ("Anthropic API key", Regex::new(r"\bsk-ant-[A-Za-z0-9_\-]{32,}\b").unwrap(), true),
-            ("Private key", Regex::new(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(), true),
-            ("JWT", Regex::new(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b").unwrap(), false),
-            (
-                "Generic secret assignment",
-                Regex::new(r#"(?i)["']?(api[_-]?key|api[_-]?secret|client[_-]?secret|secret[_-]?key|private[_-]?key|access[_-]?token|auth[_-]?token|password|passwd)["']?\s*[:=]\s*["']([A-Za-z0-9_\-+/=.]{12,})["']"#).unwrap(),
-                false,
-            ),
-        ],
     })
-}
-
-fn line_of(src: &str, byte: usize) -> u32 {
-    (memchr::memchr_iter(b'\n', &src.as_bytes()[..byte.min(src.len())]).count() + 1) as u32
-}
-
-fn shannon(s: &str) -> f64 {
-    rex_core::hash::entropy(s.as_bytes())
 }
 
 fn is_internal_host(host: &str) -> bool {
@@ -191,42 +148,7 @@ pub fn analyze(src: &str) -> JsReport {
     }
     r.source_map_url = p.smap.captures_iter(src).last().map(|c| c[1].to_string());
 
-    let mut seen = BTreeSet::new();
-    for (kind, re, high) in &p.secrets {
-        for m in re.captures_iter(src) {
-            let whole = m.get(0).expect("match");
-            let mut high = *high;
-            let value = if *kind == "Generic secret assignment" {
-                let name = m
-                    .get(1)
-                    .map(|x| x.as_str().to_ascii_lowercase())
-                    .unwrap_or_default();
-                let value = m.get(2).map(|x| x.as_str()).unwrap_or_default().to_string();
-                let v = value.to_ascii_lowercase();
-                if shannon(&value) < 3.3
-                    || v.contains("placeholder")
-                    || v.contains("example")
-                    || v.contains("xxxx")
-                    || v.contains("your")
-                {
-                    continue;
-                }
-                // A browser "api key" may be intentionally public; a *secret* never is.
-                high = name.contains("secret") || name.contains("pass") || name.contains("private");
-                value
-            } else {
-                m.get(1).unwrap_or(whole).as_str().to_string()
-            };
-            if seen.insert(value.clone()) {
-                r.secrets.push(SecretHit {
-                    kind,
-                    value,
-                    line: line_of(src, whole.start()),
-                    high,
-                });
-            }
-        }
-    }
+    r.secrets = rex_core::secrets::scan(src);
 
     const FRAMEWORKS: &[(&str, &[&str])] = &[
         (
