@@ -223,3 +223,191 @@ fn mcp_over_stdio() {
 fn completions_generate() {
     assert!(stdout(rex().args(["completions", "bash"])).contains("rex"));
 }
+
+// ───────────────────────── rex setup / doctor ─────────────────────────
+
+/// A rex command with an isolated HOME and a PATH that contains no real agent CLIs.
+fn rex_home(home: &std::path::Path, path_dir: &std::path::Path) -> Command {
+    let mut c = rex();
+    c.env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("APPDATA", home.join("AppData/Roaming"))
+        .env("PATH", path_dir);
+    c
+}
+
+#[test]
+fn setup_configures_detected_agents_idempotently_and_uninstalls() {
+    let home = tempfile::tempdir().unwrap();
+    let empty_path = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".cursor")).unwrap();
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    std::fs::write(
+        home.path().join(".cursor/mcp.json"),
+        r#"{"mcpServers":{"keep":{"command":"k"}}}"#,
+    )
+    .unwrap();
+
+    // Dry run changes nothing.
+    let out = stdout(rex_home(home.path(), empty_path.path()).args([
+        "setup",
+        "--dry-run",
+        "--command",
+        "/opt/rex",
+    ]));
+    assert!(out.contains("Cursor: would add"), "{out}");
+    assert!(
+        !std::fs::read_to_string(home.path().join(".cursor/mcp.json"))
+            .unwrap()
+            .contains("\"rex\"")
+    );
+
+    let out =
+        stdout(rex_home(home.path(), empty_path.path()).args(["setup", "--command", "/opt/rex"]));
+    assert!(
+        out.contains("Cursor: configured") && out.contains("Codex CLI: configured"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Claude Code: skipped") && out.contains("Gemini CLI: skipped"),
+        "undetected agents are skipped: {out}"
+    );
+    let cursor: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".cursor/mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cursor["mcpServers"]["rex"]["command"], "/opt/rex");
+    assert_eq!(
+        cursor["mcpServers"]["keep"]["command"], "k",
+        "other servers preserved"
+    );
+    assert!(
+        std::fs::read_to_string(home.path().join(".codex/config.toml"))
+            .unwrap()
+            .contains("[mcp_servers.rex]")
+    );
+    assert!(home.path().join(".agents/skills/rex/SKILL.md").is_file());
+
+    let again =
+        stdout(rex_home(home.path(), empty_path.path()).args(["setup", "--command", "/opt/rex"]));
+    assert!(again.contains("Cursor: already configured"), "{again}");
+
+    let un = stdout(rex_home(home.path(), empty_path.path()).args(["setup", "--uninstall"]));
+    assert!(
+        un.contains("Cursor: removed") && un.contains("Codex CLI: removed"),
+        "{un}"
+    );
+    assert!(
+        !std::fs::read_to_string(home.path().join(".cursor/mcp.json"))
+            .unwrap()
+            .contains("\"rex\"")
+    );
+    assert!(!home.path().join(".agents/skills/rex/SKILL.md").exists());
+}
+
+#[test]
+fn setup_refuses_to_clobber_invalid_config() {
+    let home = tempfile::tempdir().unwrap();
+    let empty_path = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".gemini")).unwrap();
+    std::fs::write(
+        home.path().join(".gemini/settings.json"),
+        "{ // user comments, not JSON",
+    )
+    .unwrap();
+    let out = rex_home(home.path(), empty_path.path())
+        .args(["setup", "-a", "gemini", "--command", "/opt/rex"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("refusing to modify"));
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".gemini/settings.json")).unwrap(),
+        "{ // user comments, not JSON"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_drives_the_claude_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let bin = tempfile::tempdir().unwrap();
+    let log = home.path().join("claude.log");
+    let stub = bin.path().join("claude");
+    // Stub: `mcp list` prints nothing; every call is logged.
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = stdout(rex_home(home.path(), bin.path()).args([
+        "setup",
+        "-a",
+        "claude-code",
+        "--command",
+        "/opt/rex",
+    ]));
+    assert!(out.contains("Claude Code: configured"), "{out}");
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains("mcp add --scope user rex -- /opt/rex mcp"),
+        "{calls}"
+    );
+    assert!(home.path().join(".claude/skills/rex/SKILL.md").is_file());
+}
+
+#[test]
+fn doctor_reports_without_running_anything() {
+    let empty = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let out = stdout(rex_home(home.path(), empty.path()).arg("doctor"));
+    assert!(
+        out.contains("This build")
+            && out.contains("Companion tools")
+            && out.contains("✘ not found"),
+        "{out}"
+    );
+}
+
+#[test]
+fn analyzes_wasm_and_electron_labs_and_gates_on_severity() {
+    let s = stdout(
+        rex()
+            .args(["analyze", "-f", "json"])
+            .arg(root().join("labs/wasm/sample.wasm")),
+    );
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v[0]["artifact"]["kind"], "wasm");
+
+    let asar = root().join("labs/electron/app.asar");
+    let out = rex()
+        .args(["analyze", "--fail-on", "high"])
+        .arg(&asar)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "high findings must gate CI");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ELECTRON-NODE-INTEGRATION"));
+}
+
+#[test]
+fn web_asar_extracts_and_refuses_other_inputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out");
+    stdout(
+        rex()
+            .args(["web", "asar"])
+            .arg(root().join("labs/electron/app.asar"))
+            .arg("-d")
+            .arg(&dest),
+    );
+    assert!(dest.join("main.js").is_file() && dest.join("renderer/index.html").is_file());
+    rex()
+        .args(["web", "asar"])
+        .arg(fx("crackme.elf"))
+        .arg("-d")
+        .arg(tmp.path().join("nope"))
+        .assert()
+        .failure();
+}

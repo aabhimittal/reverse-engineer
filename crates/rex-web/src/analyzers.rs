@@ -13,7 +13,8 @@ pub fn register(r: &mut Registry) {
         .register(SourceMapAnalyzer)
         .register(ApkAnalyzer)
         .register(DexAnalyzer)
-        .register(AxmlAnalyzer);
+        .register(AxmlAnalyzer)
+        .register(crate::electron::ElectronAnalyzer);
 }
 
 fn mask(s: &str) -> String {

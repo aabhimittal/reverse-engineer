@@ -38,3 +38,9 @@ name = "har"
 path = "fuzz_targets/har.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wasm_asar"
+path = "fuzz_targets/wasm_asar.rs"
+test = false
+doc = false

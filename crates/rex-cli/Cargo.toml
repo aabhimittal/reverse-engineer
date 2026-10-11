@@ -41,3 +41,13 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 tempfile.workspace = true
+
+# `cargo binstall --git https://github.com/aabhimittal/reverse-engineer rex-cli`
+# downloads the release archive instead of compiling.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/rex-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "rex-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

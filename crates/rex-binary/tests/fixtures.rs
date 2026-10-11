@@ -242,3 +242,24 @@ fn full_registry_reports_are_clean() {
         }
     }
 }
+
+#[test]
+fn wasm_lab_flags_wasi_reach_and_names_the_start_function() {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../labs/wasm/sample.wasm");
+    let data = std::fs::read(&p).unwrap();
+    assert_eq!(rex_core::detect_bytes(&data, None), ArtifactKind::Wasm);
+    let a = Artifact::from_bytes("sample.wasm", data);
+    let mut r = Registry::new();
+    rex_binary::register(&mut r);
+    let rep = r.run(&a, &AnalysisOptions::default(), &[]);
+    assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+    let f = rep
+        .findings
+        .iter()
+        .find(|f| f.id == "WASM-WASI-REACH")
+        .expect("WASI reach finding");
+    assert_eq!(f.severity, Severity::Medium);
+    assert!(f.evidence.iter().any(|e| e.starts_with("sock_connect")));
+    let funcs = serde_json::to_string(rep.section("wasm.functions").unwrap()).unwrap();
+    assert!(funcs.contains("decrypt_config"));
+}

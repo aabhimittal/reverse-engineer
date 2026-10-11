@@ -763,9 +763,146 @@ pub fn sourcemap_unpack(a: &Artifact, out: &Path) -> Result<Report> {
     Ok(rep)
 }
 
+/// Extract an Electron `app.asar` into `out` (paths that would escape `out` are skipped).
+pub fn asar_unpack(a: &Artifact, out: &Path) -> Result<Report> {
+    let start = Instant::now();
+    let ar = rex_web::asar::parse(a.data())?;
+    std::fs::create_dir_all(out).map_err(|e| Error::Io {
+        path: out.into(),
+        source: e,
+    })?;
+    let (written, skipped) = ar.extract(out).map_err(|e| Error::Io {
+        path: out.into(),
+        source: e,
+    })?;
+    let mut rep = new_report(format!("rex asar: {}", a.name()), a);
+    rep.push(Section::kv(
+        "asar",
+        "Extracted Electron archive",
+        [
+            ("Written".to_string(), written.to_string()),
+            (
+                "Skipped (links, unpacked or unsafe paths)".to_string(),
+                skipped.to_string(),
+            ),
+            ("Output".to_string(), out.display().to_string()),
+        ],
+    ));
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
 /// Serialise an OpenAPI (or any JSON) document as YAML.
 pub fn openapi_yaml(spec: &serde_json::Value) -> String {
     rex_web::yaml::to_yaml(spec)
+}
+
+/// Readiness report: compiled-in features, AI credentials and companion tools.
+///
+/// Presence is checked by looking on `PATH`; nothing is executed. rex does not call the
+/// companion tools itself. They are what to open *next* once rex has told you where to look.
+pub fn doctor_report(find: &dyn Fn(&str) -> Option<std::path::PathBuf>) -> Report {
+    let mut rep = Report::new("rex doctor", ArtifactSummary::default());
+    let yes = |b: bool| if b { "✔ yes" } else { "✘ no" }.to_string();
+    rep.push(Section::kv(
+        "doctor.build",
+        "This build",
+        [
+            ("rex version".to_string(), rex_core::VERSION.to_string()),
+            (
+                "multiarch (ARM/MIPS/... disassembly)".to_string(),
+                yes(cfg!(feature = "multiarch")),
+            ),
+            (
+                "yara (YARA-X rules)".to_string(),
+                yes(cfg!(feature = "yara")),
+            ),
+        ],
+    ));
+    let key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty())
+        || std::env::var_os("ANTHROPIC_AUTH_TOKEN").is_some_and(|v| !v.is_empty());
+    rep.push(Section::kv(
+        "doctor.ai",
+        "AI assistance (optional, opt-in)",
+        [
+            ("Claude credentials in environment".to_string(), yes(key)),
+            (
+                "Ollama (local) binary on PATH".to_string(),
+                yes(find("ollama").is_some()),
+            ),
+        ],
+    ));
+    // (tool, executables to look for, what to use it for after rex)
+    const TOOLS: &[(&str, &[&str], &str)] = &[
+        (
+            "Ghidra",
+            &["ghidraRun", "analyzeHeadless"],
+            "decompiler: open the addresses from `rex functions`",
+        ),
+        (
+            "radare2 / rizin",
+            &["r2", "rizin"],
+            "interactive analysis: `r2 -A`, then `s <addr>; pdf`",
+        ),
+        (
+            "objdump",
+            &["objdump", "llvm-objdump"],
+            "cross-check disassembly: `objdump -d -M intel`",
+        ),
+        (
+            "gdb / lldb",
+            &["gdb", "lldb"],
+            "dynamic analysis once triage says what to break on",
+        ),
+        (
+            "binwalk / unblob",
+            &["binwalk", "unblob"],
+            "deeper firmware extraction after `rex carve`",
+        ),
+        (
+            "UPX",
+            &["upx"],
+            "`upx -d` when rex reports a UPX-packed binary",
+        ),
+        (
+            "jadx",
+            &["jadx", "jadx-gui"],
+            "decompile APK classes after `rex apk`",
+        ),
+        ("apktool", &["apktool"], "decode APK resources"),
+        ("YARA", &["yara"], "run community rule sets against samples"),
+        (
+            "mitmproxy",
+            &["mitmproxy", "mitmdump"],
+            "capture traffic, export HAR for `rex web har2openapi`",
+        ),
+        (
+            "git",
+            &["git"],
+            "needed for `rex code map` history, hotspots and bus factor",
+        ),
+    ];
+    let rows = TOOLS
+        .iter()
+        .map(|(name, exes, why)| {
+            let found = exes.iter().find_map(|e| find(e));
+            vec![
+                name.to_string(),
+                found
+                    .map(|p| format!("✔ {}", p.display()))
+                    .unwrap_or_else(|| "✘ not found".into()),
+                why.to_string(),
+            ]
+        })
+        .collect();
+    rep.push(Section::table(
+        "doctor.tools",
+        "Companion tools (optional)",
+        &["tool", "status", "use it for"],
+        rows,
+        0,
+    ));
+    rep
 }
 
 /// List analyzers.

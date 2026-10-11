@@ -28,6 +28,10 @@ Commands:
   code         Codebase archaeology
   ai           LLM-assisted analysis
   mcp          Run the Model Context Protocol server on stdio
+  setup        Register rex's MCP server (and a skill) with your AI agents. Backs up configs;
+               reversible
+  doctor       Check this build, AI credentials and which companion tools (Ghidra, jadx, ...) are
+               installed
   analyzers    List analyzers
   completions  Print shell completions
   help         Print this message or the help of the given subcommand(s)
@@ -43,7 +47,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -90,7 +94,7 @@ Options:
       --fail-on <SEVERITY>      Exit with status 3 if any finding is at or above this severity (CI
                                 gating)
       --as <KIND>               Override input type detection [possible values: elf, pe, macho, apk,
-                                dex, axml, har, js, sourcemap, blob]
+                                dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...              Verbose logging (-v, -vv)
   -h, --help                    Print help
   -V, --version                 Print version
@@ -120,7 +124,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -148,7 +152,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -176,7 +180,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -204,7 +208,103 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...           Verbose logging (-v, -vv)
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+
+## rex setup
+
+```text
+Register rex's MCP server (and a skill) with your AI agents. Backs up configs; reversible
+
+Usage: rex setup [OPTIONS]
+
+Options:
+  -a, --agent <AGENT>
+          Agents to configure (default: every detected agent)
+
+          Possible values:
+          - claude-code:    Claude Code (via the `claude` CLI)
+          - claude-desktop: Claude Desktop (`claude_desktop_config.json`)
+          - cursor:         Cursor (`~/.cursor/mcp.json`)
+          - gemini:         Gemini CLI (`~/.gemini/settings.json`)
+          - codex:          OpenAI Codex CLI (`~/.codex/config.toml`)
+
+  -f, --format <FORMAT>
+          Output format (default: text, or inferred from --output extension)
+          
+          [possible values: text, json, md, sarif, html]
+
+      --dry-run
+          Show what would change without changing anything
+
+  -o, --output <FILE>
+          Write output to a file instead of stdout
+
+      --color <COLOR>
+          Colourise terminal output
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+      --uninstall
+          Remove rex from the agents instead
+
+      --max-rows <MAX_ROWS>
+          Maximum rows per table (0 = unlimited)
+          
+          [default: 50]
+
+      --no-skill
+          Don't install the skill file
+
+      --command <PATH>
+          Path the agent should launch (default: this executable)
+
+      --max-size <MAX_SIZE>
+          Refuse inputs larger than this many MiB
+          
+          [default: 1024]
+
+      --fail-on <SEVERITY>
+          Exit with status 3 if any finding is at or above this severity (CI gating)
+
+      --as <KIND>
+          Override input type detection
+          
+          [possible values: elf, pe, macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+
+  -v, --verbose...
+          Verbose logging (-v, -vv)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
+
+## rex doctor
+
+```text
+Check this build, AI credentials and which companion tools (Ghidra, jadx, ...) are installed
+
+Usage: rex doctor [OPTIONS]
+
+Options:
+  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
+                             [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>        Write output to a file instead of stdout
+      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
+                             always, never]
+      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
+      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
+                             gating)
+      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -235,7 +335,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -263,7 +363,35 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...           Verbose logging (-v, -vv)
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+
+## rex web asar
+
+```text
+Extract an Electron app.asar (analyse it first with `rex analyze app.asar`)
+
+Usage: rex web asar [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  
+
+Options:
+  -d, --dir <DIR>            Output directory [default: rex-out/asar]
+  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
+                             [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>        Write output to a file instead of stdout
+      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
+                             always, never]
+      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
+      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
+                             gating)
+      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -290,7 +418,7 @@ Options:
       --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
                              gating)
       --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, blob]
+                             dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...           Verbose logging (-v, -vv)
   -h, --help                 Print help
   -V, --version              Print version
@@ -322,7 +450,7 @@ Options:
       --fail-on <SEVERITY>      Exit with status 3 if any finding is at or above this severity (CI
                                 gating)
       --as <KIND>               Override input type detection [possible values: elf, pe, macho, apk,
-                                dex, axml, har, js, sourcemap, blob]
+                                dex, axml, har, js, sourcemap, wasm, asar, blob]
   -v, --verbose...              Verbose logging (-v, -vv)
   -h, --help                    Print help
   -V, --version                 Print version

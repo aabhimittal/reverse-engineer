@@ -8,16 +8,19 @@
 //! | [`schema`] | example JSON bodies | a JSON Schema |
 //! | [`audit`] | HTTP exchanges | security observations (headers, cookies, JWTs, CORS) |
 //! | [`js`] | a minified bundle | endpoints, secrets, frameworks, DOM sinks, unpacked sources |
+//! | [`asar`] | an Electron app's `app.asar` | its file tree, IPC surface, window security settings, bundled dependencies |
 //! | [`apk`], [`axml`], [`dex`] | an Android app | manifest, components, permissions, classes, risky APIs |
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod analyzers;
 pub mod apk;
+pub mod asar;
 pub mod audit;
 pub mod axml;
 pub mod b64;
 pub mod dex;
+pub mod electron;
 pub mod har;
 pub mod js;
 pub mod openapi;
