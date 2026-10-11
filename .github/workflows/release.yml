@@ -1,23 +1,31 @@
 name: Release
 
+# Tag `vX.Y.Z` to publish. Run it by hand (Actions > Release > Run workflow) to rehearse:
+# every target is built, packaged, checksummed and installed through install.sh, but nothing is
+# published and no attestation is made.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-rehearsal' }}
 
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
           - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, cross: true }
           - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +45,7 @@ jobs:
       - name: package
         shell: bash
         run: |
-          name="rex-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="rex-${VERSION}-${{ matrix.target }}"
           mkdir "$name"
           cp README.md LICENSE "$name"/
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -51,8 +59,61 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
-  publish:
+          if-no-files-found: error
+
+  package:
+    name: checksums
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: cd dist && ls -l && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Archives are named the way install.sh and cargo-binstall expect
+        run: |
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+            test -f "dist/rex-${VERSION}-${t}.tar.gz" || { echo "missing rex-${VERSION}-${t}.tar.gz"; exit 1; }
+          done
+          test -f "dist/rex-${VERSION}-x86_64-pc-windows-msvc.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  smoke:
+    name: install smoke test (${{ matrix.os }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Install through install.sh from the built release assets
+        run: |
+          REX_VERSION="$VERSION" REX_BASE_URL="file://$PWD/dist" REX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The installed binary works
+        run: |
+          rex --version
+          rex doctor
+          rex analyze labs/wasm/sample.wasm
+          rex analyze labs/electron/app.asar --fail-on high || test $? -eq 3
+          rex setup --dry-run
+
+  publish:
+    name: publish
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -61,9 +122,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: dist
           path: dist
-          merge-multiple: true
-      - run: cd dist && sha256sum * > SHA256SUMS
       - name: Build provenance attestation
         uses: actions/attest-build-provenance@v2
         with:
