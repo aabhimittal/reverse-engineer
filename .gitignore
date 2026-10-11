@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+/docs/book
+/labs/**/build/
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+*.carved/
+rex-out/
