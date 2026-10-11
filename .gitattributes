@@ -8,3 +8,5 @@
 *.dex binary
 *.png binary
 *.gz binary
+*.asar binary
+*.wasm binary

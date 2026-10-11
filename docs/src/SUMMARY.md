@@ -2,6 +2,8 @@
 
 [Introduction](introduction.md)
 [Getting started](getting-started.md)
+[Showcase](showcase.md)
+[FAQ and trust](faq.md)
 
 # Foundations
 
@@ -18,11 +20,13 @@
 - [Packers and obfuscation](binary/packers.md)
 - [Malware triage, capabilities and YARA](binary/malware-triage.md)
 - [Binary diffing and patch analysis](binary/diffing.md)
+- [WebAssembly modules](binary/wasm.md)
 
 # Web
 
 - [From traffic to API spec](web/traffic-to-spec.md)
 - [JavaScript bundles and source maps](web/js-bundles.md)
+- [Electron apps (app.asar)](web/electron.md)
 
 # Code
 
@@ -31,6 +35,7 @@
 # AI
 
 - [AI-assisted reverse engineering and MCP](ai/ai-assisted.md)
+- [Use rex from your AI coding agent](ai/agents.md)
 
 # Labs
 

@@ -14,3 +14,5 @@ reproducible and reviewable.
 | HAR capture | `python3 labs/web/make_har.py > labs/web/sample.har` | `rex web har2openapi labs/web/sample.har` |
 | JS bundle + source map | `python3 labs/web/make_bundle.py` | `rex web sourcemap labs/web/bundle/app.min.js` |
 | Android APK | `cargo run -p rex-web --example make_lab_apk -- labs/android/rexlab.apk` | `rex apk labs/android/rexlab.apk` |
+| WebAssembly module | `python3 labs/wasm/make_wasm.py labs/wasm/sample.wasm` | `rex analyze labs/wasm/sample.wasm` |
+| Electron app (insecure by design) | `python3 labs/electron/make_asar.py labs/electron/app.asar` | `rex analyze labs/electron/app.asar` |

@@ -4,6 +4,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use rex_engine::rex_core::{AnalysisOptions, Artifact, ArtifactKind, Report, Severity};
 use rex_engine::rex_report::{self, Format, RenderOptions};
+mod setup;
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -100,6 +102,8 @@ enum KindArg {
     Har,
     Js,
     Sourcemap,
+    Wasm,
+    Asar,
     Blob,
 }
 
@@ -115,6 +119,8 @@ impl From<KindArg> for ArtifactKind {
             KindArg::Har => ArtifactKind::Har,
             KindArg::Js => ArtifactKind::JavaScript,
             KindArg::Sourcemap => ArtifactKind::SourceMap,
+            KindArg::Wasm => ArtifactKind::Wasm,
+            KindArg::Asar => ArtifactKind::Asar,
             KindArg::Blob => ArtifactKind::Blob,
         }
     }
@@ -226,6 +232,26 @@ enum Cmd {
     /// Run the Model Context Protocol server on stdio.
     #[cfg(feature = "mcp")]
     Mcp,
+    /// Register rex's MCP server (and a skill) with your AI agents. Backs up configs; reversible.
+    Setup {
+        /// Agents to configure (default: every detected agent).
+        #[arg(short, long, value_enum)]
+        agent: Vec<setup::Agent>,
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove rex from the agents instead.
+        #[arg(long)]
+        uninstall: bool,
+        /// Don't install the skill file.
+        #[arg(long)]
+        no_skill: bool,
+        /// Path the agent should launch (default: this executable).
+        #[arg(long, value_name = "PATH")]
+        command: Option<String>,
+    },
+    /// Check this build, AI credentials and which companion tools (Ghidra, jadx, ...) are installed.
+    Doctor,
     /// List analyzers.
     Analyzers,
     /// Print shell completions.
@@ -257,6 +283,13 @@ enum WebCmd {
         path: PathBuf,
         /// Output directory.
         #[arg(short = 'd', long, default_value = "rex-out/sources")]
+        dir: PathBuf,
+    },
+    /// Extract an Electron app.asar (analyse it first with `rex analyze app.asar`).
+    Asar {
+        path: PathBuf,
+        /// Output directory.
+        #[arg(short = 'd', long, default_value = "rex-out/asar")]
         dir: PathBuf,
     },
 }
@@ -560,6 +593,13 @@ fn run(cli: Cli) -> Result<i32> {
             let a = ctx.load(&path)?;
             ctx.emit(&[rex_engine::sourcemap_unpack(&a, &dir)?])
         }
+        Cmd::Web(WebCmd::Asar { path, dir }) => {
+            let a = ctx.load(&path)?;
+            if a.kind() != ArtifactKind::Asar {
+                bail!("{} is not an Electron ASAR archive", path.display());
+            }
+            ctx.emit(&[rex_engine::asar_unpack(&a, &dir)?])
+        }
         Cmd::Code(CodeCmd::Map { path }) => {
             let a = ctx.load(&path)?;
             if a.kind() != ArtifactKind::Directory {
@@ -586,11 +626,82 @@ fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Cmd::Analyzers => ctx.emit(&[rex_engine::analyzers_report()]),
+        Cmd::Doctor => ctx.emit(&[rex_engine::doctor_report(&|n| setup::which(n))]),
+        Cmd::Setup {
+            agent,
+            dry_run,
+            uninstall,
+            no_skill,
+            command,
+        } => run_setup(agent, dry_run, uninstall, no_skill, command),
         Cmd::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "rex", &mut std::io::stdout());
             Ok(0)
         }
     }
+}
+
+fn run_setup(
+    agent: Vec<setup::Agent>,
+    dry_run: bool,
+    uninstall: bool,
+    no_skill: bool,
+    command: Option<String>,
+) -> Result<i32> {
+    let home = setup::home_dir().context("cannot find your home directory (set HOME)")?;
+    let command = match command {
+        Some(c) => c,
+        None => std::env::current_exe()
+            .context("cannot locate the rex executable")?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let force = !agent.is_empty();
+    let agents: Vec<setup::Agent> = if force {
+        agent
+    } else {
+        setup::Agent::ALL.to_vec()
+    };
+    let plan = setup::Plan {
+        home,
+        command: command.clone(),
+        dry_run,
+        uninstall,
+        skill: !no_skill,
+    };
+    if !uninstall && !dry_run && command.contains("target/debug") {
+        eprintln!(
+            "rex: note: registering a debug build ({command}); use --command to point at an installed rex"
+        );
+    }
+    let mut failed = false;
+    let mut changed = false;
+    for (name, r) in setup::run(&plan, &agents, force) {
+        match r {
+            Ok(setup::Outcome::Configured(w)) => {
+                changed = true;
+                println!("✔ {name}: configured ({w})");
+            }
+            Ok(setup::Outcome::Removed(w)) => {
+                changed = true;
+                println!("✔ {name}: removed ({w})");
+            }
+            Ok(setup::Outcome::Already(w)) => println!("• {name}: already configured ({w})"),
+            Ok(setup::Outcome::NotPresent) => println!("• {name}: nothing to remove"),
+            Ok(setup::Outcome::Skipped(why)) => println!("- {name}: skipped, {why}"),
+            Ok(setup::Outcome::Would(what)) => println!("→ {name}: would {what}"),
+            Err(e) => {
+                failed = true;
+                println!("✘ {name}: {e:#}");
+            }
+        }
+    }
+    if changed && !dry_run {
+        println!(
+            "\nRestart your agent to pick up the change. Undo with `rex setup --uninstall` (backups are saved next to each edited file)."
+        );
+    }
+    Ok(i32::from(failed))
 }
 
 #[cfg(feature = "ai")]

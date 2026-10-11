@@ -25,7 +25,8 @@ pub fn register(r: &mut Registry) {
         .register(Strings)
         .register(Functions)
         .register(Entropy)
-        .register(Carve);
+        .register(Carve)
+        .register(Wasm);
     #[cfg(feature = "yara")]
     r.register(Yara);
 }
@@ -413,7 +414,7 @@ impl Analyzer for Capabilities {
         "Behavioural capabilities from imports, strings and constants, mapped to MITRE ATT&CK"
     }
     fn supports(&self, a: &Artifact) -> bool {
-        native(a) || a.kind() == ArtifactKind::Blob
+        native(a) || matches!(a.kind(), ArtifactKind::Blob | ArtifactKind::Wasm)
     }
     fn priority(&self) -> i32 {
         30
@@ -422,6 +423,10 @@ impl Analyzer for Capabilities {
         let imports = if native(a) {
             Binary::parse(a.data())
                 .map(|b| b.import_names())
+                .unwrap_or_default()
+        } else if a.kind() == ArtifactKind::Wasm {
+            crate::wasm::parse(a.data())
+                .map(|m| m.imports.into_iter().map(|i| i.name).collect())
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -1006,6 +1011,195 @@ impl Analyzer for Carve {
                         .map(|h| format!("{:#x}: {}", base + h.offset, h.description)),
                 )
                 .attack("T1552.004"),
+            );
+        }
+        Ok(out)
+    }
+}
+
+// ───────────────────────────── wasm ─────────────────────────────
+
+/// WebAssembly modules.
+pub struct Wasm;
+
+impl Analyzer for Wasm {
+    fn name(&self) -> &'static str {
+        "wasm.module"
+    }
+    fn description(&self) -> &'static str {
+        "WebAssembly structure: imports, exports, memory, WASI reach, debug info, largest functions"
+    }
+    fn supports(&self, a: &Artifact) -> bool {
+        a.kind() == ArtifactKind::Wasm
+    }
+    fn priority(&self) -> i32 {
+        10
+    }
+    fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
+        use crate::wasm::{self, ExternKind};
+        let m = wasm::parse(a.data())?;
+        let mut out = AnalyzerOutput::new();
+
+        let mut kv: Vec<(String, String)> = vec![
+            ("Format".into(), format!("WebAssembly v{}", m.version)),
+            (
+                "Functions".into(),
+                format!(
+                    "{} defined, {} imported",
+                    m.defined_functions, m.imported_functions
+                ),
+            ),
+            ("Exports".into(), m.exports.len().to_string()),
+            ("Data segments".into(), m.data_segments.to_string()),
+        ];
+        if let Some(s) = m.start {
+            kv.push(("Start function".into(), m.func_name(s)));
+        }
+        for (i, mem) in m.memories.iter().enumerate() {
+            kv.push((
+                format!("Memory {i}"),
+                format!(
+                    "{} page(s) min, {} max{}",
+                    mem.min,
+                    mem.max.map_or("no".to_string(), |x| x.to_string()),
+                    if mem.shared { ", shared" } else { "" }
+                ),
+            ));
+        }
+        for (field, name, version) in &m.producers {
+            kv.push((format!("Producer ({field})"), format!("{name} {version}")));
+        }
+        out.section(Section::kv("wasm.overview", "WebAssembly overview", kv).with_data(&m));
+
+        out.section(Section::table(
+            "wasm.sections",
+            "Sections",
+            &["id", "name", "offset", "size"],
+            m.sections
+                .iter()
+                .map(|s| {
+                    vec![
+                        s.id.to_string(),
+                        s.name.clone(),
+                        hex(s.offset as u64),
+                        s.size.to_string(),
+                    ]
+                })
+                .collect(),
+            opts.max_rows,
+        ));
+        if !m.imports.is_empty() {
+            out.section(Section::table(
+                "wasm.imports",
+                "Imports",
+                &["module", "name", "kind"],
+                m.imports
+                    .iter()
+                    .map(|i| vec![i.module.clone(), i.name.clone(), i.kind.as_str().into()])
+                    .collect(),
+                opts.max_rows,
+            ));
+        }
+        if !m.exports.is_empty() {
+            out.section(Section::table(
+                "wasm.exports",
+                "Exports",
+                &["name", "kind", "index"],
+                m.exports
+                    .iter()
+                    .map(|e| vec![e.name.clone(), e.kind.as_str().into(), e.index.to_string()])
+                    .collect(),
+                opts.max_rows,
+            ));
+        }
+        if !m.body_sizes.is_empty() {
+            let mut sized: Vec<(usize, usize)> = m.body_sizes.iter().copied().enumerate().collect();
+            sized.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+            out.section(Section::table(
+                "wasm.functions",
+                "Largest functions (start here)",
+                &["function", "body bytes"],
+                sized
+                    .iter()
+                    .map(|(i, sz)| {
+                        vec![
+                            m.func_name((m.imported_functions + i) as u32),
+                            sz.to_string(),
+                        ]
+                    })
+                    .collect(),
+                opts.max_rows.min(15),
+            ));
+        }
+
+        // WASI imports are the module's whole reach outside the sandbox.
+        let reach: Vec<String> = m
+            .imports
+            .iter()
+            .filter(|i| i.kind == ExternKind::Func && i.module.starts_with("wasi"))
+            .filter_map(|i| {
+                wasm::WASI_REACH
+                    .iter()
+                    .find(|(n, _)| *n == i.name)
+                    .map(|(n, what)| format!("{n}: {what}"))
+            })
+            .collect();
+        if !reach.is_empty() {
+            let risky = reach.iter().any(|r| {
+                r.starts_with("sock_") || r.starts_with("proc_") || r.starts_with("path_unlink")
+            });
+            out.finding(
+                Finding::new(
+                    "WASM-WASI-REACH",
+                    if risky { Severity::Medium } else { Severity::Low },
+                    "capability",
+                    "Module reaches outside the sandbox through WASI",
+                )
+                .describe("A WebAssembly module can only touch the host through its imports. These are the grants to review before running it, and the host decides whether to honour them.")
+                .evidence_all(reach),
+            );
+        }
+        let host: Vec<String> = m
+            .imports
+            .iter()
+            .filter(|i| i.kind == ExternKind::Func && !i.module.starts_with("wasi"))
+            .map(|i| format!("{}.{}", i.module, i.name))
+            .collect();
+        if !host.is_empty() {
+            out.finding(
+                Finding::new(
+                    "WASM-HOST-IMPORTS",
+                    Severity::Info,
+                    "interface",
+                    "Module calls host-provided functions",
+                )
+                .describe("These are implemented by the embedder (browser glue, runtime). Read that glue code to see what they can do.")
+                .evidence_all(host),
+            );
+        }
+        if m.memories.iter().any(|x| x.max.is_none() && !x.shared) {
+            out.finding(
+                Finding::new(
+                    "WASM-MEMORY-UNBOUNDED",
+                    Severity::Low,
+                    "hardening",
+                    "Linear memory has no declared maximum",
+                )
+                .describe(
+                    "The module may grow memory until the host refuses. Embedders should cap it.",
+                ),
+            );
+        }
+        if m.has_debug_info() {
+            out.finding(
+                Finding::new(
+                    "WASM-DEBUG-INFO",
+                    Severity::Info,
+                    "info",
+                    "Debug information or source-map link shipped",
+                )
+                .describe("DWARF sections or a sourceMappingURL make reversing much easier and can leak build paths.")
+                .evidence_all(m.custom.iter().filter(|c| c.starts_with(".debug_") || *c == "sourceMappingURL" || *c == "external_debug_info").cloned()),
             );
         }
         Ok(out)

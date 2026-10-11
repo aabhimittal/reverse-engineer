@@ -159,3 +159,45 @@ fn android_lab_apk() {
         "launcher activity is expected to be exported"
     );
 }
+
+#[test]
+fn electron_lab_is_detected_and_triaged() {
+    let data = std::fs::read(lab("electron/app.asar")).unwrap();
+    assert_eq!(rex_core::detect_bytes(&data, None), ArtifactKind::Asar);
+    let rep = run("electron/app.asar");
+    let ids: Vec<&str> = rep.findings.iter().map(|f| f.id.as_str()).collect();
+    for want in [
+        "ELECTRON-NODE-INTEGRATION",
+        "ELECTRON-NO-CONTEXT-ISOLATION",
+        "ELECTRON-SECRETS",
+        "ELECTRON-LOADS-HTTP",
+        "ELECTRON-OPEN-EXTERNAL",
+    ] {
+        assert!(ids.contains(&want), "missing {want}: {ids:?}");
+    }
+    assert_eq!(rep.max_severity(), Some(Severity::High));
+    let secret = rep
+        .findings
+        .iter()
+        .find(|f| f.id == "ELECTRON-SECRETS")
+        .unwrap();
+    assert!(
+        secret
+            .evidence
+            .iter()
+            .all(|e| !e.contains("AKIAIOSFODNN7EXAMPLE")),
+        "secrets must be masked: {:?}",
+        secret.evidence
+    );
+}
+
+#[test]
+fn electron_lab_extracts_into_the_output_directory_only() {
+    let a = Artifact::from_path(lab("electron/app.asar"), rex_core::DEFAULT_MAX_SIZE).unwrap();
+    let ar = rex_web::asar::parse(a.data()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (written, skipped) = ar.extract(tmp.path()).unwrap();
+    assert_eq!((written, skipped), (8, 0));
+    let main = std::fs::read_to_string(tmp.path().join("main.js")).unwrap();
+    assert!(main.contains("ipcMain.handle(\"notes:read\""));
+}

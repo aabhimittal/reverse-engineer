@@ -30,6 +30,8 @@ pub enum ArtifactKind {
     AndroidBinaryXml,
     /// Generic zip archive.
     Zip,
+    /// Electron ASAR application archive.
+    Asar,
     /// HTTP Archive (browser / proxy traffic capture).
     Har,
     /// JavaScript source or bundle.
@@ -60,6 +62,7 @@ impl ArtifactKind {
             ArtifactKind::Dex => "Dalvik executable (DEX)",
             ArtifactKind::AndroidBinaryXml => "Android binary XML",
             ArtifactKind::Zip => "Zip archive",
+            ArtifactKind::Asar => "Electron ASAR archive",
             ArtifactKind::Har => "HTTP Archive (HAR)",
             ArtifactKind::JavaScript => "JavaScript",
             ArtifactKind::SourceMap => "JavaScript source map",
@@ -139,6 +142,10 @@ pub fn detect_bytes(data: &[u8], name: Option<&str>) -> ArtifactKind {
         return ArtifactKind::Zip;
     }
 
+    if looks_like_asar(data) {
+        return ArtifactKind::Asar;
+    }
+
     // Text-ish formats.
     let head = &data[..data.len().min(4096)];
     let trimmed = trim_ascii_start(head);
@@ -183,6 +190,23 @@ pub fn detect_path(path: &Path, data: &[u8]) -> ArtifactKind {
         return ArtifactKind::Directory;
     }
     detect_bytes(data, path.file_name().and_then(|n| n.to_str()))
+}
+
+/// ASAR has no magic number; recognise its framed JSON header instead.
+fn looks_like_asar(d: &[u8]) -> bool {
+    let u = |at: usize| -> Option<usize> {
+        let b = d.get(at..at + 4)?;
+        Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    let (Some(four), Some(hsize), Some(payload), Some(jlen)) = (u(0), u(4), u(8), u(12)) else {
+        return false;
+    };
+    four == 4
+        && hsize >= 8
+        && payload == hsize - 4
+        && jlen <= payload - 4
+        && d.get(16..16 + jlen)
+            .is_some_and(|j| j.starts_with(br#"{"files""#))
 }
 
 fn is_pe(data: &[u8]) -> bool {
