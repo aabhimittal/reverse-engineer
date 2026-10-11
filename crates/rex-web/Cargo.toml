@@ -1,0 +1,22 @@
+[package]
+name = "rex-web"
+description = "Web, API and mobile app reverse engineering: HAR to OpenAPI, JS bundle analysis, source maps, APK/DEX/AXML"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rex-core.workspace = true
+rex-binary.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+zip.workspace = true
+memchr.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rex-report.workspace = true

@@ -263,7 +263,11 @@ mod tests {
         assert_eq!(classify("cmd.exe /c del %s"), Category::Command);
         assert_eq!(classify("/etc/passwd"), Category::Path);
         assert_eq!(classify(r"C:\Windows\System32\drivers"), Category::Path);
-        assert_eq!(classify("AKIAABCDEFGHIJKLMNOP"), Category::Secret);
+        // Built at runtime so the repository never contains a contiguous key-shaped literal.
+        assert_eq!(
+            classify(&format!("AKIA{}", "ABCDEFGHIJKLMNOP")),
+            Category::Secret
+        );
         assert_eq!(classify("admin@example.org"), Category::Email);
         assert_eq!(
             classify("Mozilla/5.0 (Windows NT 10.0)"),

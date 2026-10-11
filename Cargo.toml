@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rex-core", "crates/rex-report", "crates/rex-binary"]
+members = ["crates/rex-core", "crates/rex-report", "crates/rex-binary", "crates/rex-web"]
 
 [workspace.package]
 version = "0.1.0"
