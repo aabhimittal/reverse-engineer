@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 
 pub mod analyzers;
+pub mod arm;
 pub mod capabilities;
 pub mod carve;
 mod checksec;
@@ -30,6 +31,7 @@ pub mod model;
 pub mod packer;
 pub mod strings;
 pub mod wasm;
+pub mod wasm_ops;
 #[cfg(feature = "yara")]
 pub mod yara;
 

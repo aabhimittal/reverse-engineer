@@ -15,7 +15,7 @@ what it can do, what is risky, and where to look next, in seconds. It is not a d
    - Native binary: `rex_functions` -> `rex_xrefs` (a string, import or function) -> `rex_disasm` (one function) -> `rex_cfg`.
    - Two builds: `rex_diff` (look at small "surgical" changes first).
    - Firmware blob: `rex_carve`, then analyse the extracted files.
-   - WebAssembly: `rex_analyze` lists imports (WASI grants are its whole reach outside the sandbox), exports and the largest functions.
+   - WebAssembly: `rex_analyze` lists imports with their call sites (WASI grants are its whole reach outside the sandbox), exports and the largest functions; `rex_disasm` with a function name or index shows its instructions, `rex_xrefs` an import's callers.
    - Electron `app.asar`: `rex_analyze` reports window security settings, IPC channels, secrets and dependencies; `rex web asar <file> -d dir` extracts the JS to read.
    - HAR capture: `rex_har_to_openapi` for the API spec; the report also lists traffic-audit findings.
    - Source tree: `rex_code_map` for entry points, routes, central modules and hotspots.

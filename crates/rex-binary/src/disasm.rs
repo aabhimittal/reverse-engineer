@@ -104,6 +104,162 @@ impl SymbolResolver for Resolver {
     }
 }
 
+/// A decoder that function discovery can drive, whatever the CPU.
+///
+/// Discovery needs three things: decode one instruction at an address, sweep a short stretch
+/// linearly (PLT stubs, `_start`), and forget per-path state when it starts following a new path.
+pub trait CodeDecoder {
+    /// Decode a single instruction at `addr` from `bytes` (which start at `addr`).
+    fn decode_one(&mut self, bytes: &[u8], addr: u64) -> Option<Insn>;
+    /// Linear sweep of up to `max` instructions.
+    fn linear(&mut self, bytes: &[u8], addr: u64, max: usize) -> Vec<Insn>;
+    /// Longest instruction in bytes (how much to hand `decode_one`).
+    fn max_insn_len(&self) -> usize;
+    /// Drop per-path register state before following a new path.
+    fn reset(&mut self) {}
+}
+
+impl CodeDecoder for X86 {
+    fn decode_one(&mut self, bytes: &[u8], addr: u64) -> Option<Insn> {
+        X86::decode_one(self, bytes, addr)
+    }
+    fn linear(&mut self, bytes: &[u8], addr: u64, max: usize) -> Vec<Insn> {
+        X86::linear(self, bytes, addr, max)
+    }
+    fn max_insn_len(&self) -> usize {
+        16
+    }
+}
+
+/// Pick the decoder for a binary, or `None` when its CPU has only linear disassembly.
+///
+/// x86 is built in. AArch64 and 32-bit ARM (ARM mode, not Thumb) need the `multiarch` feature.
+pub fn decoder_for(bin: &crate::model::Binary, names: &Names) -> Option<Box<dyn CodeDecoder>> {
+    use crate::model::Arch;
+    match &bin.arch {
+        Arch::X86 | Arch::X86_64 => Some(Box::new(X86::new(bin.bits, names))),
+        #[cfg(feature = "multiarch")]
+        Arch::AArch64 if bin.little_endian => Cs::new(true).map(|d| Box::new(d) as _),
+        #[cfg(feature = "multiarch")]
+        Arch::Arm if bin.little_endian && !looks_thumb(bin) => {
+            Cs::new(false).map(|d| Box::new(d) as _)
+        }
+        _ => None,
+    }
+}
+
+/// Thumb code is marked by odd symbol/entry addresses or ARM ELF mapping symbols (`$t`).
+#[cfg(feature = "multiarch")]
+fn looks_thumb(bin: &crate::model::Binary) -> bool {
+    bin.entry & 1 == 1
+        || bin.symbols.iter().any(|s| {
+            s.name.starts_with("$t") || (s.kind == crate::model::SymKind::Func && s.addr & 1 == 1)
+        })
+}
+
+/// Capstone-backed decoder for fixed-width ARM encodings, with flow recovered by [`crate::arm`].
+#[cfg(feature = "multiarch")]
+pub struct Cs {
+    cs: capstone::Capstone,
+    a64: bool,
+    tracker: crate::arm::Tracker,
+}
+
+#[cfg(feature = "multiarch")]
+impl Cs {
+    /// `a64 = true` for AArch64, `false` for 32-bit ARM in ARM mode (little endian).
+    pub fn new(a64: bool) -> Option<Self> {
+        use capstone::prelude::*;
+        let cs = if a64 {
+            Capstone::new()
+                .arm64()
+                .mode(arch::arm64::ArchMode::Arm)
+                .build()
+        } else {
+            Capstone::new()
+                .arm()
+                .mode(arch::arm::ArchMode::Arm)
+                .endian(capstone::Endian::Little)
+                .build()
+        }
+        .ok()?;
+        Some(Self {
+            cs,
+            a64,
+            tracker: Default::default(),
+        })
+    }
+}
+
+#[cfg(feature = "multiarch")]
+impl CodeDecoder for Cs {
+    fn decode_one(&mut self, bytes: &[u8], addr: u64) -> Option<Insn> {
+        let insns = self.cs.disasm_count(bytes.get(..4)?, addr, 1).ok()?;
+        let i = insns.iter().next()?;
+        let mnemonic = i.mnemonic().unwrap_or("").to_string();
+        let ops = i.op_str().unwrap_or("");
+        let (flow, data_ref) = if self.a64 {
+            self.tracker.a64(&mnemonic, ops, addr)
+        } else {
+            self.tracker.arm32(&mnemonic, ops, addr)
+        };
+        // Straight-line register state does not survive a control transfer.
+        if flow != Flow::Next {
+            self.tracker.reset();
+        }
+        Some(Insn {
+            addr,
+            bytes: i.bytes().to_vec(),
+            text: if ops.is_empty() {
+                mnemonic.clone()
+            } else {
+                format!("{mnemonic} {ops}")
+            },
+            mnemonic,
+            flow,
+            data_ref,
+        })
+    }
+    fn linear(&mut self, bytes: &[u8], addr: u64, max: usize) -> Vec<Insn> {
+        self.tracker.reset();
+        let mut out = Vec::new();
+        let mut a = addr;
+        while out.len() < max {
+            let off = (a - addr) as usize;
+            let Some(rest) = bytes.get(off..) else { break };
+            match self.decode_one(rest, a) {
+                Some(i) => {
+                    a += i.len();
+                    out.push(i);
+                }
+                None => {
+                    // Undecodable word: emit it as data and stay aligned.
+                    let Some(w) = rest.get(..4) else { break };
+                    out.push(Insn {
+                        addr: a,
+                        bytes: w.to_vec(),
+                        mnemonic: ".word".into(),
+                        text: format!(
+                            ".word 0x{:08x}",
+                            u32::from_le_bytes([w[0], w[1], w[2], w[3]])
+                        ),
+                        flow: Flow::Next,
+                        data_ref: None,
+                    });
+                    a += 4;
+                }
+            }
+        }
+        out
+    }
+    fn max_insn_len(&self) -> usize {
+        4
+    }
+    fn reset(&mut self) {
+        self.tracker.reset();
+    }
+}
+
 /// Stateful x86 decoder + formatter.
 pub struct X86 {
     bitness: u32,

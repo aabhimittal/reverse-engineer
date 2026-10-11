@@ -24,9 +24,10 @@ in seconds, with output a machine can consume. When it points you at a function,
 function. It is not a decompiler and not a debugger.
 
 **Which architectures get full analysis?**
-Function discovery, control-flow graphs and function-level diffing are x86 and x86-64. ARM, AArch64, MIPS,
-PowerPC and RISC-V get linear disassembly with `--features multiarch`. Everything format-level (headers, imports,
-checksec, strings, capabilities) works on all supported formats.
+Function discovery, control-flow graphs, call graphs and function-level diffing work for x86, x86-64, AArch64 and
+32-bit ARM in ARM mode (the last two need `--features multiarch`, which release binaries include). Thumb code,
+MIPS, PowerPC and RISC-V get linear disassembly only. Everything format-level (headers, imports, checksec, strings,
+capabilities) works on all supported formats.
 
 **Can I trust the findings?**
 Treat them as leads. Rules fire on evidence they print (imports, strings, flag values), and every heuristic can be
