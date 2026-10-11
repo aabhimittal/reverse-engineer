@@ -1,0 +1,43 @@
+[package]
+name = "rex-cli"
+description = "rex: one command to reverse engineer binaries, firmware, Android apps, web APIs and codebases"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "rex"
+path = "src/main.rs"
+
+[features]
+default = ["ai", "mcp"]
+## LLM assistance (`--ai`, `rex ai …`). Network is only used when explicitly requested.
+ai = ["dep:rex-ai"]
+## `rex mcp`: Model Context Protocol server for AI agents.
+mcp = ["dep:rex-mcp"]
+## ARM/AArch64/MIPS/PowerPC/RISC-V disassembly via Capstone.
+multiarch = ["rex-engine/multiarch"]
+## YARA-X rule scanning.
+yara = ["rex-engine/yara"]
+
+[dependencies]
+rex-engine.workspace = true
+rex-ai = { workspace = true, optional = true }
+rex-mcp = { workspace = true, optional = true }
+clap.workspace = true
+clap_complete = "4.5"
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true

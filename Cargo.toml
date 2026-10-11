@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rex-core", "crates/rex-report", "crates/rex-binary", "crates/rex-web", "crates/rex-code"]
+members = ["crates/rex-core", "crates/rex-report", "crates/rex-binary", "crates/rex-web", "crates/rex-code", "crates/rex-engine", "crates/rex-mcp", "crates/rex-ai", "crates/rex-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ rex-web = { path = "crates/rex-web", version = "0.1.0" }
 rex-code = { path = "crates/rex-code", version = "0.1.0" }
 rex-ai = { path = "crates/rex-ai", version = "0.1.0" }
 rex-mcp = { path = "crates/rex-mcp", version = "0.1.0" }
+rex-engine = { path = "crates/rex-engine", version = "0.1.0" }
 
 anyhow = "1.0"
 thiserror = "2.0"
@@ -51,6 +52,7 @@ tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-go = "0.25"
 tree-sitter-java = "0.23"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

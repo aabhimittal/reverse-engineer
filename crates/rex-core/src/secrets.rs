@@ -106,13 +106,16 @@ pub fn scan(src: &str) -> Vec<SecretHit> {
 
 /// Mask the middle of a secret so reports don't re-leak it.
 pub fn mask(s: &str) -> String {
+    // Reveal at most a quarter of the value at each end (and never more than 6 + 4
+    // characters), enough to recognise a key without leaking a short password.
     let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= 10 {
-        return "*".repeat(chars.len());
+    let n = chars.len();
+    if n < 8 {
+        return "*".repeat(n);
     }
-    let head: String = chars[..6].iter().collect();
-    let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("{head}…{tail} ({} chars)", chars.len())
+    let head: String = chars[..(n / 4).min(6)].iter().collect();
+    let tail: String = chars[n - (n / 4).min(4)..].iter().collect();
+    format!("{head}…{tail} ({n} chars)")
 }
 
 #[cfg(test)]
@@ -135,6 +138,8 @@ mod tests {
                 .any(|h| h.kind == "Generic secret assignment" && h.line == 2 && h.high)
         );
         assert!(!hits.iter().any(|h| h.value.contains("changeme")));
-        assert_eq!(mask("abcdefghijklmnop"), "abcdef…mnop (16 chars)");
+        assert_eq!(mask("abcdefghijklmnop"), "abcd…mnop (16 chars)");
+        assert_eq!(mask("Rexlab2024!"), "Re…4! (11 chars)");
+        assert_eq!(mask("short"), "*****");
     }
 }

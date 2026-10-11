@@ -544,6 +544,75 @@ impl Analyzer for Strings {
                     .at(Location { offset: Some(secrets[0].offset), ..Default::default() }),
             );
         }
+        // Embedded-device classics: password hashes, plaintext credentials, telnet.
+        static SHADOW: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static CRED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let shadow = SHADOW.get_or_init(|| {
+            regex::Regex::new(r"^[a-z_][a-z0-9_.-]{0,31}:\$(?:1|2[aby]|5|6|y)\$[^:]{8,}:").unwrap()
+        });
+        let cred = CRED.get_or_init(|| {
+            regex::Regex::new(r"(?i)^(?:[\w.]*?(?:pass(?:word|wd)?|pwd|secret|api_?key|auth_?token))\s*[=:]\s*['\x22]?([^\s'\x22]{4,})").unwrap()
+        });
+        let hashes: Vec<String> = all
+            .iter()
+            .filter(|s| shadow.is_match(&s.text))
+            .map(|s| {
+                format!(
+                    "{:#x}: {}…",
+                    s.offset,
+                    s.text.split(':').take(1).collect::<String>()
+                )
+            })
+            .collect();
+        if !hashes.is_empty() {
+            out.finding(
+                Finding::new("BIN-PASSWORD-HASHES", Severity::High, "credentials", "Unix password hashes embedded")
+                    .describe("crypt(3) hashes (often MD5-crypt on devices) can be cracked offline; shared across every unit of this firmware.")
+                    .evidence_all(hashes)
+                    .attack("T1552.001"),
+            );
+        }
+        let creds: Vec<String> = all
+            .iter()
+            .filter_map(|s| {
+                cred.captures(s.text.trim()).map(|c| {
+                    (
+                        s,
+                        c.get(1).map(|m| m.as_str().to_string()).unwrap_or_default(),
+                    )
+                })
+            })
+            .filter(|(_, v)| {
+                !v.starts_with('%') && !v.starts_with('$') && v != "null" && v != "none"
+            })
+            .map(|(s, v)| format!("{:#x}: {}", s.offset, s.text.replace(&v, &redact(&v))))
+            .take(20)
+            .collect();
+        if !creds.is_empty() {
+            out.finding(
+                Finding::new(
+                    "BIN-PLAINTEXT-CREDENTIALS",
+                    Severity::Medium,
+                    "credentials",
+                    "Credential-like assignments in plain text",
+                )
+                .evidence_all(creds)
+                .attack("T1552.001"),
+            );
+        }
+        let telnet: Vec<String> = all
+            .iter()
+            .filter(|s| s.text.contains("telnetd"))
+            .map(|s| format!("{:#x}: {}", s.offset, s.text))
+            .take(5)
+            .collect();
+        if !telnet.is_empty() && a.kind() == ArtifactKind::Blob {
+            out.finding(
+                Finding::new("FW-TELNET", Severity::Medium, "firmware", "Telnet daemon referenced")
+                    .describe("Telnet sends credentials in clear text and is a classic IoT botnet entry point (Mirai).")
+                    .evidence_all(telnet),
+            );
+        }
         let net: Vec<_> = interesting
             .iter()
             .filter(|s| matches!(s.category, strings::Category::Url | strings::Category::Ip))
@@ -912,7 +981,7 @@ impl Analyzer for Carve {
         if !fs.is_empty() {
             out.finding(
                 Finding::new("FW-FILESYSTEM", Severity::Info, "firmware", "Embedded kernel / filesystem found")
-                    .describe("Extract with `rex carve <file> -o out/`, then unpack the filesystem (unsquashfs, cpio -idv).")
+                    .describe("Extract with `rex carve <file> --extract out/`, then unpack the filesystem (unsquashfs, cpio -idv, jefferson).")
                     .evidence_all(fs.iter().map(|h| format!("{:#x}: {}", base + h.offset, h.description))),
             );
         }

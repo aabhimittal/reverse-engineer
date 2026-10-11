@@ -99,7 +99,7 @@ pub(crate) fn render(r: &Report) -> String {
     let _ = write!(
         o,
         "<div class=\"toolbar\"><input id=\"q\" type=\"search\" placeholder=\"Filter rows, findings, strings…\" aria-label=\"Filter\">\
-<button id=\"expand\">Expand all</button><button id=\"collapse\">Collapse all</button><button id=\"theme\" aria-label=\"Toggle theme\">◐</button></div>"
+<button id=\"expand\">Expand all</button><button id=\"collapse\">Collapse all</button><button id=\"theme\" aria-label=\"Toggle light/dark theme\">Theme</button></div>"
     );
     let chips: Vec<String> = r
         .severity_counts()

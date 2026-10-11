@@ -551,8 +551,20 @@ pub fn extract(data: &[u8], carved: &[Carved], dir: &Path) -> std::io::Result<Ve
         .min(data.len());
         let path = dir.join(format!("{:08x}.{}", c.offset, c.ext));
         std::fs::write(&path, &data[start..end])?;
-        if c.kind == "gzip" {
-            let mut d = GzDecoder::new(&data[start..end]);
+        // Unwrap common containers one level so the analyst gets the interesting bytes.
+        let inner: Option<&[u8]> = match c.kind {
+            "gzip" => Some(&data[start..end]),
+            "uimage" if end - start > 64 => {
+                let payload = &data[start + 64..end];
+                let p = dir.join(format!("{:08x}.uimage.payload", c.offset));
+                std::fs::write(&p, payload)?;
+                paths.push(p);
+                payload.starts_with(b"\x1f\x8b").then_some(payload)
+            }
+            _ => None,
+        };
+        if let Some(gz) = inner {
+            let mut d = GzDecoder::new(gz).take(4 << 30);
             let mut out = Vec::new();
             if d.read_to_end(&mut out).is_ok() {
                 let p = dir.join(format!("{:08x}.gunzipped", c.offset));

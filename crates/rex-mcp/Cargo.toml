@@ -1,0 +1,13 @@
+[package]
+name = "rex-mcp"
+description = "Model Context Protocol (MCP) server exposing the rex reverse-engineering toolkit to AI agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rex-engine.workspace = true
+serde_json.workspace = true
