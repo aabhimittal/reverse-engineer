@@ -40,7 +40,7 @@ what's risky about it, and where to look next*, then hands you off to Ghidra, a 
 
 ```sh
 cargo install --git https://github.com/aabhimittal/reverse-engineer rex-cli
-# extras: ARM/MIPS/... disassembly and YARA-X rules
+# extras: ARM/MIPS/... disassembly and YARA-X rules (only load YARA rules you trust; see SECURITY.md)
 cargo install --git https://github.com/aabhimittal/reverse-engineer rex-cli --features multiarch,yara
 # or
 docker build -t rex . && docker run --rm -v "$PWD:/work" rex analyze /work/sample

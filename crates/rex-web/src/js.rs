@@ -9,7 +9,7 @@
 use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub use rex_core::secrets::SecretHit;
@@ -274,33 +274,59 @@ pub fn safe_relative(p: &str) -> Option<PathBuf> {
         }
     }
     let s = s.split(['?', '#']).next().unwrap_or(s).replace('\\', "/");
-    let mut out = PathBuf::new();
-    for comp in Path::new(&s).components() {
-        match comp {
-            Component::Normal(c) => {
-                let c = c.to_string_lossy();
-                let clean: String = c
-                    .chars()
-                    .map(|ch| {
-                        if ch.is_control() || matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|')
-                        {
-                            '_'
-                        } else {
-                            ch
-                        }
-                    })
-                    .collect();
-                if !clean.is_empty() {
-                    out.push(clean);
-                }
+    // Parse by hand rather than with `std::path::Path`: that type reads `C:` as a drive
+    // prefix and `\` as a separator on Windows only, which would make this security
+    // boundary behave differently per OS.
+    let mut parts: Vec<String> = Vec::new();
+    for seg in s.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
             }
-            Component::ParentDir => {
-                out.pop();
-            }
-            _ => {}
+            seg => parts.push(sanitize_segment(seg)),
         }
     }
-    (out.components().count() > 0).then_some(out)
+    if parts.is_empty() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    out.extend(parts);
+    Some(out)
+}
+
+/// Make one path segment safe on every platform: no control characters or characters
+/// Windows forbids, no trailing dots/spaces (Windows strips them), and no reserved
+/// device names (`CON`, `NUL`, `COM1`, ...), which Windows treats as devices, not files.
+fn sanitize_segment(seg: &str) -> String {
+    let mut clean: String = seg
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = clean.trim_end_matches(['.', ' ']).len();
+    clean.truncate(trimmed);
+    if clean.is_empty() {
+        return "_".into();
+    }
+    let stem = clean
+        .split('.')
+        .next()
+        .unwrap_or(&clean)
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.ends_with(|c: char| c.is_ascii_digit() && c != '0'));
+    if reserved {
+        clean.insert(0, '_');
+    }
+    clean
 }
 
 /// Write every embedded original source under `dir`. Returns (written, skipped-without-content).
@@ -399,6 +425,38 @@ var env=process.env.REACT_APP_API_URL;
             PathBuf::from("C_/Users/a/b.js")
         );
         assert!(safe_relative("../..").is_none());
+    }
+
+    #[test]
+    fn safe_paths_neutralise_windows_hazards() {
+        // Reserved device names, trailing dots/spaces and `..` past the root, identically on every OS.
+        let p = |s: &str| {
+            safe_relative(s)
+                .unwrap()
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(p("src/CON.js"), vec!["src", "_CON.js"]);
+        assert_eq!(p("nul"), vec!["_nul"]);
+        assert_eq!(p("a/com1.txt/b"), vec!["a", "_com1.txt", "b"]);
+        assert_eq!(
+            p("a/COM0/b"),
+            vec!["a", "COM0", "b"],
+            "COM0 is not reserved"
+        );
+        assert_eq!(p("a/../../b"), vec!["b"]);
+        assert_eq!(p("dir. /file. "), vec!["dir", "file"]);
+        assert_eq!(p("a/b:stream"), vec!["a", "b_stream"]);
+        assert_eq!(
+            p("\\\\server\\share\\x.js"),
+            vec!["server", "share", "x.js"]
+        );
+        assert_eq!(
+            p("..."),
+            vec!["_"],
+            "a run of dots is not a parent reference"
+        );
     }
 
     #[test]
