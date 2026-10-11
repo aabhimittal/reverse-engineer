@@ -16,3 +16,4 @@ reproducible and reviewable.
 | Android APK | `cargo run -p rex-web --example make_lab_apk -- labs/android/rexlab.apk` | `rex apk labs/android/rexlab.apk` |
 | WebAssembly module | `python3 labs/wasm/make_wasm.py labs/wasm/sample.wasm` | `rex analyze labs/wasm/sample.wasm` |
 | Electron app (insecure by design) | `python3 labs/electron/make_asar.py labs/electron/app.asar` | `rex analyze labs/electron/app.asar` |
+| AArch64 and ARM32 ELF with a PLT | `scripts/build-fixtures.sh` | `rex functions crates/rex-binary/tests/fixtures/sample_a64.elf` (needs `--features multiarch`) |

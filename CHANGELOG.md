@@ -22,3 +22,4 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `install.sh` (SHA-256 verified), cargo-binstall metadata, Homebrew formula generator, build-provenance
   attestations on releases, GitHub Pages workflow for the handbook.
 - Handbook: showcase, FAQ and trust, WebAssembly, Electron, and AI-agent chapters.
+- AArch64 and 32-bit ARM (ARM mode) function discovery, CFGs, call graph, PLT import resolution, string references and `main` inference (feature `multiarch`); functions no longer run on into the next function or the PLT after a call to an unknown no-return function.

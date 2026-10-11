@@ -49,6 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p rex-binary --features yara,multiarch
+      - run: cargo test -p rex-engine --features multiarch
       - run: cargo build -p rex-cli --no-default-features
   docs:
     runs-on: ubuntu-latest

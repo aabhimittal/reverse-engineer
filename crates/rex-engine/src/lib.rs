@@ -290,7 +290,8 @@ pub fn disasm(
         .bytes_at(a.data(), start)
         .ok_or_else(|| Error::Other(format!("{start:#x} is not in a mapped section")))?;
     let names = rex_binary::disasm::Names(std::sync::Arc::new(p.names.clone()));
-    let mut x = rex_binary::disasm::X86::new(b.bits, &names);
+    let mut x = rex_binary::disasm::decoder_for(&b, &names)
+        .ok_or_else(|| Error::Unsupported(format!("{} control-flow analysis", b.arch.name())))?;
     let insns = x.linear(bytes, start, count);
     let comments = insns
         .iter()
@@ -1004,5 +1005,28 @@ mod tests {
         let r = sourcemap_unpack(&js, out.path()).unwrap();
         assert!(r.section("sourcemap").is_some());
         assert!(out.path().join("src/config.ts").exists());
+    }
+
+    #[cfg(feature = "multiarch")]
+    #[test]
+    fn arm_listing_cfg_and_address_mode_use_the_arm_decoder() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rex-binary/tests/fixtures/sample_a64.elf");
+        let a = Artifact::from_bytes("sample_a64.elf", std::fs::read(path).unwrap());
+        let o = AnalysisOptions::default();
+        let text = disasm(&a, &o, Some("check"), None, 0).unwrap();
+        assert!(
+            text.contains("cbz") && text.contains("open-sesame"),
+            "{text}"
+        );
+        let mm = cfg(&a, &o, "check", "mermaid").unwrap();
+        assert!(mm.contains("-- T -->") && mm.contains("-- F -->"), "{mm}");
+        let b = rex_binary::Binary::parse(a.data()).unwrap();
+        let main = b.find_symbol("main").unwrap().addr;
+        let at = disasm(&a, &o, None, Some(main), 4).unwrap();
+        assert!(
+            at.contains("stp"),
+            "address mode must decode AArch64, not x86: {at}"
+        );
     }
 }

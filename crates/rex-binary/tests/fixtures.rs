@@ -263,3 +263,120 @@ fn wasm_lab_flags_wasi_reach_and_names_the_start_function() {
     let funcs = serde_json::to_string(rep.section("wasm.functions").unwrap()).unwrap();
     assert!(funcs.contains("decrypt_config"));
 }
+
+// ───────────────────────── ARM / AArch64 ─────────────────────────
+
+#[cfg(feature = "multiarch")]
+mod arm {
+    use super::*;
+    use rex_binary::functions::{self, EdgeKind};
+
+    fn program(name: &str) -> (Binary, functions::Program) {
+        let data = fixture(name);
+        let b = Binary::parse(&data).unwrap();
+        let p = functions::analyze(&b, &data, &AnalysisOptions::default());
+        (b, p)
+    }
+
+    fn func<'a>(p: &'a functions::Program, name: &str) -> &'a functions::Function {
+        p.find(name).unwrap_or_else(|| {
+            panic!(
+                "no {name}; have {:?}",
+                p.functions.values().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+    }
+
+    #[test]
+    fn aarch64_functions_blocks_and_calls_are_recovered() {
+        let (b, p) = program("sample_a64.elf");
+        assert_eq!(b.arch, Arch::AArch64);
+        assert!(!p.unsupported_arch);
+        for n in ["check", "checksum", "main"] {
+            func(&p, n);
+        }
+        // `check` is a loop with an early exit: several blocks and real branching.
+        let check = func(&p, "check");
+        assert!(check.cyclomatic() >= 3, "cyclomatic {}", check.cyclomatic());
+        assert!(
+            check
+                .blocks
+                .iter()
+                .any(|b| b.succs.iter().any(|(_, k)| *k == EdgeKind::True)
+                    && b.succs.iter().any(|(_, k)| *k == EdgeKind::False)),
+            "a conditional branch must yield true and false successors"
+        );
+        // checksum is a counted loop: it has a back edge.
+        let sum = func(&p, "checksum");
+        assert!(
+            sum.blocks
+                .iter()
+                .any(|b| b.succs.iter().any(|(t, _)| *t <= b.start)),
+            "back edge"
+        );
+        // Call graph: main calls check, and nothing else does.
+        let callers = p.callers();
+        assert_eq!(callers.get(&check.addr), Some(&vec![func(&p, "main").addr]));
+    }
+
+    #[test]
+    fn aarch64_plt_stubs_name_the_imports() {
+        let (_, p) = program("sample_a64.elf");
+        let main = func(&p, "main");
+        assert_eq!(main.imports_called, vec!["stub_exit", "stub_log"]);
+        assert!(p.stubs.values().any(|n| n == "stub_log"));
+        assert!(p.names.values().any(|n| n == "stub_log@plt"));
+    }
+
+    #[test]
+    fn aarch64_string_references_resolve_through_adrp_pairs() {
+        let (_, p) = program("sample_a64.elf");
+        let main = func(&p, "main");
+        for s in ["access granted", "denied"] {
+            assert!(
+                main.strings.iter().any(|x| x == s),
+                "{s} in {:?}",
+                main.strings
+            );
+        }
+        assert!(func(&p, "check").strings.iter().any(|s| s == "open-sesame"));
+    }
+
+    #[test]
+    fn aarch64_main_is_inferred_in_a_stripped_binary() {
+        let (_, p) = program("sample_a64.stripped.elf");
+        let main = func(&p, "main");
+        assert_eq!(p.main, Some(main.addr));
+        assert_eq!(main.imports_called, vec!["stub_exit", "stub_log"]);
+        assert!(
+            p.functions
+                .values()
+                .filter(|f| f.name.starts_with("sub_"))
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn arm32_functions_and_loops_are_recovered() {
+        let (b, p) = program("sample_arm32.elf");
+        assert_eq!(b.arch, Arch::Arm);
+        assert!(!p.unsupported_arch);
+        let check = func(&p, "check");
+        assert!(check.cyclomatic() >= 3);
+        func(&p, "checksum");
+        let main = func(&p, "main");
+        assert!(main.calls.contains(&check.addr));
+        // Known gap: ARM32 PIC code reaches strings through literal pools holding pc-relative
+        // offsets (`ldr r0, [pc, #n]; add r0, pc, r0`), which are not resolved to the string.
+    }
+}
+
+#[cfg(not(feature = "multiarch"))]
+#[test]
+fn arm_without_multiarch_degrades_to_unsupported_not_to_wrong_answers() {
+    let data = fixture("sample_a64.elf");
+    let b = Binary::parse(&data).unwrap();
+    let p = functions::analyze(&b, &data, &AnalysisOptions::default());
+    assert!(p.unsupported_arch && p.functions.is_empty());
+}

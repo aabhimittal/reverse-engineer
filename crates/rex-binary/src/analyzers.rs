@@ -686,12 +686,12 @@ impl Analyzer for Functions {
         if prog.unsupported_arch {
             let hint = if cfg!(feature = "multiarch") {
                 format!(
-                    "Control-flow recovery is currently x86/x64 only. For {} use `rex disasm <file> --function <name>` (linear Capstone disassembly).",
+                    "Control-flow recovery covers x86/x64, AArch64 and 32-bit ARM (ARM mode). For {} use `rex disasm <file> --addr <hex>` (linear Capstone disassembly).",
                     b.arch.name()
                 )
             } else {
                 format!(
-                    "Control-flow recovery is currently x86/x64 only. {} disassembly needs the `multiarch` feature (`cargo install rex-cli --features multiarch`).",
+                    "Control-flow recovery for {} needs the `multiarch` feature (`cargo install rex-cli --features multiarch`); built-in support is x86/x64.",
                     b.arch.name()
                 )
             };

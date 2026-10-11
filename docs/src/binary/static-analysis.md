@@ -79,3 +79,20 @@ find *where* to look, then open those addresses there.
 1. Run `rex functions` on `/bin/ls`. How many functions come from `.eh_frame` vs. calls?
    (Compare with `REX_LOG=debug`.)
 2. Find a function in `/bin/ls` with cyclomatic complexity > 50. What does it do?
+
+## Beyond x86: AArch64 and ARM
+
+With `--features multiarch` (included in release binaries) the same recursive-descent pipeline runs on AArch64 and
+32-bit ARM in ARM mode. The differences you will notice reading the output:
+
+- **Addresses are built in two steps.** AArch64 cannot load a 64-bit address in one instruction, so `adrp x0, #page`
+  gives the 4 KiB page and `add x0, x0, #off` finishes the job. rex pairs them, which is how
+  `adrp+add` turns into the `"open-sesame"` annotation beside a string reference. After linker relaxation the pair may
+  collapse into a single `adr`.
+- **PLT stubs look different.** `adrp x16, page; ldr x17, [x16, #off]; br x17` means "jump to whatever the GOT slot
+  holds". Resolving the slot names the import, so calls show up as `stub_log@plt`.
+- **Fixed-width instructions** make disassembly sync trivially, but there is no `call`/`ret` pair: calls are `bl`/`blr`
+  and return is `ret` (a branch to `x30`).
+
+Known gaps: Thumb code (most 32-bit ARM Linux binaries are Thumb-2) is not followed, ARM32 PLT stubs and PC-relative
+literal pools are not resolved, and indirect branches are shown but not followed.

@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 
 pub mod analyzers;
+pub mod arm;
 pub mod capabilities;
 pub mod carve;
 mod checksec;

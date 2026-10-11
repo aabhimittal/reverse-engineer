@@ -30,7 +30,7 @@ what's risky about it, and where to look next*, then hands you off to Ghidra, a 
 | Domain | Capabilities |
 |---|---|
 | **Native binaries** (ELF, PE, Mach-O, incl. fat) | Unified model of sections/imports/exports/symbols; **checksec** (NX, PIE/ASLR, RELRO, canary, FORTIFY, CFG, CET/BTI, signing, hardened runtime); classified strings (URLs, IPs, registry keys, secrets, commands); **50+ capability rules mapped to MITRE ATT&CK**; packer heuristics; imphash + TLSH; optional YARA-X |
-| **Code recovery** (x86/x64 built in; ARM, AArch64, MIPS, PowerPC, RISC-V via `--features multiarch`) | Recursive-descent function discovery seeded from symbols, `.eh_frame`, `.pdata`, `LC_FUNCTION_STARTS`; PLT/IAT/stub resolution; `main` inference in stripped binaries; basic blocks, CFGs (Mermaid/DOT), call graph, cross-references, cyclomatic complexity |
+| **Code recovery** (x86/x64 built in; **AArch64 and 32-bit ARM** via `--features multiarch`, linear disassembly for MIPS, PowerPC, RISC-V) | Recursive-descent function discovery seeded from symbols, `.eh_frame`, `.pdata`, `LC_FUNCTION_STARTS`; PLT/IAT/stub resolution; `main` inference in stripped binaries; basic blocks, CFGs (Mermaid/DOT), call graph, cross-references, cyclomatic complexity |
 | **Firmware & blobs** | binwalk-style carving with per-format validators and exact sizing, entropy profile, extraction (gzip/uImage unwrapping), embedded credential and key checks |
 | **Patch analysis** | Function-level binary diff: matches by name, instruction hash, then trigram similarity; flags small surgical changes |
 | **Android** | APK triage: binary manifest decoder, exported components (incl. implicit exports), deep links, permissions, DEX parser with checksum/signature validation, risky-API rules, TLS trust classes, native-lib hardening, signing |
@@ -142,7 +142,7 @@ make -C labs && mdbook serve docs
 
 ## Honest limitations
 
-- Control-flow recovery and function diffing are **x86/x64 only**. Other architectures get linear disassembly (Capstone).
+- Control-flow recovery and function diffing cover **x86/x64, AArch64 and 32-bit ARM (ARM mode)**. Thumb, MIPS, PowerPC and RISC-V get linear disassembly (Capstone) only. On AArch64, PLT stubs, string references and `main` in stripped glibc-style binaries are resolved; on ARM32, PLT names and PC-relative string pools are not. Indirect branches (`br`, `blr`, jump tables) are not followed.
 - Heuristics (capabilities, packer score, secret patterns) produce **leads, not verdicts**. Findings say why they fired.
 - Obfuscated or virtualised code defeats static analysis; unpack or trace dynamically first.
 - WebAssembly is analysed structurally (imports, exports, sizes), not disassembled; pair it with WABT or Ghidra.
