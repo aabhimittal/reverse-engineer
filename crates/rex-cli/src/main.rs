@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
-use rex_engine::rex_core::{self, AnalysisOptions, Artifact, ArtifactKind, Report, Severity};
+use rex_engine::rex_core::{AnalysisOptions, Artifact, ArtifactKind, Report, Severity};
 use rex_engine::rex_report::{self, Format, RenderOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -378,7 +378,7 @@ fn add_ai(report: &mut Report, ai: &AiArgs) -> Result<()> {
     let text = rex_ai::summarize(llm.as_ref(), report)?;
     report.sections.insert(
         0,
-        rex_core::Section::text(
+        rex_engine::rex_core::Section::text(
             "ai.summary",
             format!("AI briefing ({})", llm.describe()),
             text,
@@ -642,10 +642,10 @@ fn run_ai(ctx: &Ctx, cmd: AiCmd) -> Result<i32> {
             let names = rex_ai::name_functions(llm.as_ref(), &funcs)?;
             let mut r = Report::new(
                 format!("rex ai name: {}", a.name()),
-                rex_core::ArtifactSummary::of(&a),
+                rex_engine::rex_core::ArtifactSummary::of(&a),
             );
             r.push(
-                rex_core::Section::table(
+                rex_engine::rex_core::Section::table(
                     "ai.names",
                     "Suggested function names",
                     &["address", "current", "suggested", "confidence", "rationale"],
