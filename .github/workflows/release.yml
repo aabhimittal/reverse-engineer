@@ -44,7 +44,8 @@ jobs:
           # Ubuntu's gcc turns on _FORTIFY_SOURCE, which emits glibc-only symbols (__fprintf_chk,
           # __snprintf_chk) that the musl target cannot link. Found by the first rehearsal.
           echo "CFLAGS_aarch64_unknown_linux_musl=-U_FORTIFY_SOURCE" >> "$GITHUB_ENV"
-      - run: cargo build --release -p rex-cli --target ${{ matrix.target }}
+      # multiarch bundles Capstone so AArch64/ARM analysis works out of the box.
+      - run: cargo build --release -p rex-cli --features multiarch --target ${{ matrix.target }}
       - name: package
         shell: bash
         run: |
@@ -112,10 +113,12 @@ jobs:
           mkdir arm && tar xzf "dist/rex-${VERSION}-aarch64-unknown-linux-musl.tar.gz" -C arm
           qemu-aarch64 "arm/rex-${VERSION}-aarch64-unknown-linux-musl/rex" --version
           qemu-aarch64 "arm/rex-${VERSION}-aarch64-unknown-linux-musl/rex" analyze labs/wasm/sample.wasm
+          qemu-aarch64 "arm/rex-${VERSION}-aarch64-unknown-linux-musl/rex" doctor | grep -E "multiarch.*yes"
       - name: The installed binary works
         run: |
           rex --version
-          rex doctor
+          rex doctor | tee doctor.txt
+          grep -E "multiarch.*yes" doctor.txt
           rex analyze labs/wasm/sample.wasm
           rex analyze labs/electron/app.asar --fail-on high || test $? -eq 3
           rex setup --dry-run
