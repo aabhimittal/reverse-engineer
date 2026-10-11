@@ -1,0 +1,16 @@
+[package]
+name = "rex-ai"
+description = "Optional LLM assistance for rex: report summaries, function naming and explanations (Claude API or local Ollama)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rex-core.workspace = true
+rex-report.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true

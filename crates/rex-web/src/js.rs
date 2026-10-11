@@ -1,0 +1,490 @@
+//! JavaScript bundle analysis and source-map unpacking.
+//!
+//! A production bundle is a city map with the street names removed:
+//! minification renames every variable, but *string literals survive*. API
+//! paths, hostnames, feature flags and, all too often, keys are still in
+//! plain text. And if the site ships a source map, you get the original street
+//! names back: the full, unminified source tree.
+
+use regex::Regex;
+use serde::Serialize;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+pub use rex_core::secrets::SecretHit;
+
+/// Result of analysing a bundle.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct JsReport {
+    /// Absolute URLs.
+    pub urls: BTreeSet<String>,
+    /// API-looking paths in string literals.
+    pub paths: BTreeSet<String>,
+    /// HTTP calls: (method, target).
+    pub calls: BTreeSet<(String, String)>,
+    /// GraphQL operation names.
+    pub graphql: BTreeSet<String>,
+    /// Secrets.
+    pub secrets: Vec<SecretHit>,
+    /// Frameworks / bundlers detected.
+    pub frameworks: BTreeSet<&'static str>,
+    /// Dangerous DOM sinks: (sink, count).
+    pub sinks: Vec<(&'static str, usize)>,
+    /// `process.env.X` / `import.meta.env.X` names.
+    pub env_vars: BTreeSet<String>,
+    /// Internal / non-production hosts referenced.
+    pub internal_hosts: BTreeSet<String>,
+    /// `sourceMappingURL` value, if present.
+    pub source_map_url: Option<String>,
+    /// Lines / bytes.
+    pub lines: usize,
+}
+
+struct Pats {
+    url: Regex,
+    path: Regex,
+    call: Regex,
+    gql: Regex,
+    env: Regex,
+    smap: Regex,
+    method: Regex,
+}
+
+fn pats() -> &'static Pats {
+    static P: OnceLock<Pats> = OnceLock::new();
+    P.get_or_init(|| Pats {
+        url: Regex::new(r#"(?i)\b(?:https?|wss?)://[a-z0-9.\-]+(?::\d+)?(?:/[^\s"'`<>\\)\]{}]*)?"#).unwrap(),
+        path: Regex::new(r#"["'`](/(?:api|v\d+|graphql|gql|rest|auth|oauth2?|admin|internal|private|user|users|account|accounts|login|logout|session|sessions|token|upload|download|search|payments?|checkout|orders?|ws|socket\.io)(?:/[A-Za-z0-9_\-.{}:$]*)*)/?(?:\?[^"'`]*)?["'`]"#).unwrap(),
+        call: Regex::new(r#"(?:\bfetch|\baxios(?:\.(get|post|put|patch|delete|head))?|\$\.(get|post|ajax)|\.open)\(\s*(?:["'](GET|POST|PUT|PATCH|DELETE)["']\s*,\s*)?[`"']([^`"']{1,300})[`"']"#).unwrap(),
+        gql: Regex::new(r"\b(query|mutation|subscription)\s+([A-Z][A-Za-z0-9_]{2,})\s*[({]").unwrap(),
+        env: Regex::new(r"\b(?:process\.env|import\.meta\.env)\.([A-Z][A-Z0-9_]{2,})").unwrap(),
+        smap: Regex::new(r"[#@]\s*sourceMappingURL=(\S+)").unwrap(),
+        method: Regex::new(r#"(?i)\bmethod\s*:\s*["'`](get|post|put|patch|delete|head)["'`]"#).unwrap(),
+    })
+}
+
+fn is_internal_host(host: &str) -> bool {
+    let h = host.split(':').next().unwrap_or(host);
+    h == "localhost"
+        || h.starts_with("127.")
+        || h.starts_with("10.")
+        || h.starts_with("192.168.")
+        || (h.starts_with("172.")
+            && h.split('.')
+                .nth(1)
+                .and_then(|o| o.parse::<u8>().ok())
+                .is_some_and(|o| (16..=31).contains(&o)))
+        || [".internal", ".local", ".corp", ".lan", ".intranet"]
+            .iter()
+            .any(|s| h.ends_with(s))
+        || [
+            "staging", "stage.", "dev.", "-dev.", "qa.", "uat.", "test.", "sandbox",
+        ]
+        .iter()
+        .any(|s| h.contains(s))
+}
+
+/// Analyse JavaScript source text.
+pub fn analyze(src: &str) -> JsReport {
+    let p = pats();
+    let mut r = JsReport {
+        lines: src.lines().count(),
+        ..Default::default()
+    };
+    for m in p.url.find_iter(src) {
+        let u = m.as_str().trim_end_matches(['.', ',', ';']).to_string();
+        if u.contains("www.w3.org")
+            || u.contains("reactjs.org/docs/error-decoder")
+            || u.contains("schemas.")
+        {
+            continue;
+        }
+        if let Some((_, host, _, _)) = crate::har::split_url(&u) {
+            if is_internal_host(&host) {
+                r.internal_hosts.insert(host);
+            }
+        }
+        if r.urls.len() < 2000 {
+            r.urls.insert(u);
+        }
+    }
+    for c in p.path.captures_iter(src) {
+        if r.paths.len() < 2000 {
+            r.paths.insert(c[1].to_string());
+        }
+    }
+    for c in p.call.captures_iter(src) {
+        let method = c
+            .get(1)
+            .or(c.get(2))
+            .or(c.get(3))
+            .map(|m| m.as_str().to_ascii_uppercase())
+            .unwrap_or_else(|| "GET".into());
+        let mut method = if method == "AJAX" {
+            "GET".into()
+        } else {
+            method
+        };
+        // fetch(url, { method: "POST" }): look a little way past the URL for an options object.
+        if c.get(1).is_none() && c.get(3).is_none() {
+            let end = c.get(0).expect("match").end();
+            let mut stop = src.len().min(end + 160);
+            while !src.is_char_boundary(stop) {
+                stop -= 1;
+            }
+            let tail = &src[end..stop];
+            let tail = tail.split(')').next().unwrap_or(tail);
+            if let Some(mm) = p.method.captures(tail) {
+                method = mm[1].to_ascii_uppercase();
+            }
+        }
+        let target = c[4].to_string();
+        if target.starts_with('/') || target.starts_with("http") || target.contains("${") {
+            r.calls.insert((method, target));
+        }
+    }
+    for c in p.gql.captures_iter(src) {
+        r.graphql.insert(format!("{} {}", &c[1], &c[2]));
+    }
+    for c in p.env.captures_iter(src) {
+        r.env_vars.insert(c[1].to_string());
+    }
+    r.source_map_url = p.smap.captures_iter(src).last().map(|c| c[1].to_string());
+
+    r.secrets = rex_core::secrets::scan(src);
+
+    const FRAMEWORKS: &[(&str, &[&str])] = &[
+        (
+            "React",
+            &[
+                "react.production.min",
+                "__REACT_DEVTOOLS_GLOBAL_HOOK__",
+                "react-dom",
+                "_reactRootContainer",
+            ],
+        ),
+        (
+            "Next.js",
+            &["__NEXT_DATA__", "/_next/static/", "next/router"],
+        ),
+        (
+            "Vue",
+            &["__VUE__", "__vue_app__", "Vue.component", "createVNode"],
+        ),
+        ("Nuxt", &["__NUXT__", "/_nuxt/"]),
+        (
+            "Angular",
+            &["ng-version", "ɵɵdefineComponent", "@angular/core"],
+        ),
+        ("Svelte", &["svelte-", "SvelteComponent"]),
+        ("jQuery", &["jQuery.fn", "jquery"]),
+        ("webpack", &["__webpack_require__", "webpackChunk"]),
+        ("Vite", &["import.meta.env", "/@vite/"]),
+        (
+            "Firebase",
+            &[
+                "firebaseapp.com",
+                "firebase.initializeApp",
+                "firestore.googleapis.com",
+            ],
+        ),
+        ("Sentry", &["@sentry/", "Sentry.init"]),
+        ("Apollo GraphQL", &["ApolloClient", "__APOLLO_STATE__"]),
+        ("Socket.IO", &["socket.io", "io.connect("]),
+    ];
+    for (name, markers) in FRAMEWORKS {
+        if markers.iter().any(|m| src.contains(m)) {
+            r.frameworks.insert(name);
+        }
+    }
+    const SINKS: &[(&str, &str)] = &[
+        ("eval(", "eval("),
+        ("new Function(", "new Function("),
+        (".innerHTML=", ".innerHTML="),
+        (".innerHTML =", ".innerHTML ="),
+        (".outerHTML=", ".outerHTML="),
+        ("document.write(", "document.write("),
+        ("dangerouslySetInnerHTML", "dangerouslySetInnerHTML"),
+        ("v-html", "v-html"),
+        ("bypassSecurityTrust", "bypassSecurityTrust"),
+        ("postMessage(", "postMessage("),
+        ("setTimeout(\"", "setTimeout(\""),
+    ];
+    let mut sinks: Vec<(&'static str, usize)> = Vec::new();
+    for (label, needle) in SINKS {
+        let n = memchr::memmem::find_iter(src.as_bytes(), needle.as_bytes()).count();
+        if n > 0 {
+            let label = label.trim_end_matches(" =").trim_end_matches('=');
+            match sinks.iter_mut().find(|(l, _)| *l == label) {
+                Some(s) => s.1 += n,
+                None => sinks.push((label, n)),
+            }
+        }
+    }
+    r.sinks = sinks;
+    r
+}
+
+/// A parsed source map.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SourceMap {
+    /// Original source paths.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Original contents (parallel to `sources`).
+    #[serde(default, rename = "sourcesContent")]
+    pub sources_content: Vec<Option<String>>,
+    /// Optional root.
+    #[serde(default, rename = "sourceRoot")]
+    pub source_root: Option<String>,
+}
+
+/// Parse a source map (JSON). Also accepts the `)]}'` XSSI prefix.
+pub fn parse_source_map(data: &[u8]) -> rex_core::Result<SourceMap> {
+    let data = data.strip_prefix(b")]}'").unwrap_or(data);
+    serde_json::from_slice(data).map_err(|e| rex_core::Error::parse("source map", e.to_string()))
+}
+
+/// Decode an inline `data:application/json;base64,…` source map.
+pub fn inline_source_map(url: &str) -> Option<Vec<u8>> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if meta.contains("base64") {
+        crate::b64::decode(payload)
+    } else {
+        Some(crate::har::percent_decode(payload).into_bytes())
+    }
+}
+
+/// Turn a source-map path like `webpack:///./src/../app/x.ts` into a safe
+/// relative path (no `..`, no absolute roots, no drive letters).
+pub fn safe_relative(p: &str) -> Option<PathBuf> {
+    let mut s = p;
+    for prefix in [
+        "webpack://",
+        "webpack-internal://",
+        "file://",
+        "ng://",
+        "vite://",
+        "rollup://",
+    ] {
+        if let Some(r) = s.strip_prefix(prefix) {
+            s = r;
+        }
+    }
+    let s = s.split(['?', '#']).next().unwrap_or(s).replace('\\', "/");
+    // Parse by hand rather than with `std::path::Path`: that type reads `C:` as a drive
+    // prefix and `\` as a separator on Windows only, which would make this security
+    // boundary behave differently per OS.
+    let mut parts: Vec<String> = Vec::new();
+    for seg in s.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            seg => parts.push(sanitize_segment(seg)),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    out.extend(parts);
+    Some(out)
+}
+
+/// Make one path segment safe on every platform: no control characters or characters
+/// Windows forbids, no trailing dots/spaces (Windows strips them), and no reserved
+/// device names (`CON`, `NUL`, `COM1`, ...), which Windows treats as devices, not files.
+fn sanitize_segment(seg: &str) -> String {
+    let mut clean: String = seg
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = clean.trim_end_matches(['.', ' ']).len();
+    clean.truncate(trimmed);
+    if clean.is_empty() {
+        return "_".into();
+    }
+    let stem = clean
+        .split('.')
+        .next()
+        .unwrap_or(&clean)
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.ends_with(|c: char| c.is_ascii_digit() && c != '0'));
+    if reserved {
+        clean.insert(0, '_');
+    }
+    clean
+}
+
+/// Write every embedded original source under `dir`. Returns (written, skipped-without-content).
+pub fn unpack(map: &SourceMap, dir: &Path) -> std::io::Result<(Vec<PathBuf>, usize)> {
+    let mut written = Vec::new();
+    let mut missing = 0;
+    for (i, src) in map.sources.iter().enumerate() {
+        let Some(Some(content)) = map.sources_content.get(i) else {
+            missing += 1;
+            continue;
+        };
+        let Some(rel) = safe_relative(src) else {
+            missing += 1;
+            continue;
+        };
+        let path = dir.join(&rel);
+        debug_assert!(path.starts_with(dir));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+        written.push(path);
+    }
+    Ok((written, missing))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUNDLE: &str = r#"!function(){"use strict";var e="https://api.example.com/v2",t=__webpack_require__(1);
+fetch("/api/v2/users/"+id,{method:"GET"});axios.post("/api/v2/orders",{a:1});
+const q=gql`query GetViewer { viewer { id } }`;var k="{AWS}";
+var cfg={apiKey:"{GKEY}",password:"hunter2"};
+el.innerHTML = x; eval(y); var s="http://staging.internal.example.local:8080/debug";
+var env=process.env.REACT_APP_API_URL;
+//# sourceMappingURL=app.js.map
+}();"#;
+
+    /// Key-shaped values are assembled at runtime so the repository itself never
+    /// contains contiguous secret-looking literals (keeps secret scanners quiet).
+    fn bundle() -> String {
+        BUNDLE
+            .replace("{AWS}", &format!("AKIA{}", "ABCDEFGHIJKLMNOP"))
+            .replace(
+                "{GKEY}",
+                &format!("AIza{}", "SyA1234567890abcdefghijklmnopqrstuv"),
+            )
+    }
+
+    #[test]
+    fn analyzes_bundle() {
+        let r = analyze(&bundle());
+        assert!(r.urls.contains("https://api.example.com/v2"));
+        assert!(r.paths.contains("/api/v2/orders"), "{:?}", r.paths);
+        assert!(
+            r.calls.contains(&("POST".into(), "/api/v2/orders".into())),
+            "{:?}",
+            r.calls
+        );
+        assert!(r.calls.contains(&("GET".into(), "/api/v2/users/".into())));
+        assert!(r.graphql.contains("query GetViewer"));
+        assert!(
+            r.secrets
+                .iter()
+                .any(|s| s.kind == "AWS access key id" && s.line == 3)
+        );
+        assert!(r.secrets.iter().any(|s| s.kind == "Google API key"));
+        assert!(
+            !r.secrets.iter().any(|s| s.value == "hunter2"),
+            "low-entropy/short values ignored"
+        );
+        assert!(r.frameworks.contains("webpack"));
+        assert!(r.sinks.iter().any(|(s, n)| *s == ".innerHTML" && *n == 1));
+        assert!(r.internal_hosts.iter().any(|h| h.contains("staging")));
+        assert!(r.env_vars.contains("REACT_APP_API_URL"));
+        assert_eq!(r.source_map_url.as_deref(), Some("app.js.map"));
+    }
+
+    #[test]
+    fn safe_paths() {
+        assert_eq!(
+            safe_relative("webpack:///./src/App.tsx").unwrap(),
+            PathBuf::from("src/App.tsx")
+        );
+        assert_eq!(
+            safe_relative("../../../../etc/passwd").unwrap(),
+            PathBuf::from("etc/passwd")
+        );
+        assert_eq!(
+            safe_relative("/abs/x.js").unwrap(),
+            PathBuf::from("abs/x.js")
+        );
+        assert_eq!(
+            safe_relative("C:\\Users\\a\\b.js").unwrap(),
+            PathBuf::from("C_/Users/a/b.js")
+        );
+        assert!(safe_relative("../..").is_none());
+    }
+
+    #[test]
+    fn safe_paths_neutralise_windows_hazards() {
+        // Reserved device names, trailing dots/spaces and `..` past the root, identically on every OS.
+        let p = |s: &str| {
+            safe_relative(s)
+                .unwrap()
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(p("src/CON.js"), vec!["src", "_CON.js"]);
+        assert_eq!(p("nul"), vec!["_nul"]);
+        assert_eq!(p("a/com1.txt/b"), vec!["a", "_com1.txt", "b"]);
+        assert_eq!(
+            p("a/COM0/b"),
+            vec!["a", "COM0", "b"],
+            "COM0 is not reserved"
+        );
+        assert_eq!(p("a/../../b"), vec!["b"]);
+        assert_eq!(p("dir. /file. "), vec!["dir", "file"]);
+        assert_eq!(p("a/b:stream"), vec!["a", "b_stream"]);
+        assert_eq!(
+            p("\\\\server\\share\\x.js"),
+            vec!["server", "share", "x.js"]
+        );
+        assert_eq!(
+            p("..."),
+            vec!["_"],
+            "a run of dots is not a parent reference"
+        );
+    }
+
+    #[test]
+    fn unpacks_sources_safely() {
+        let map = parse_source_map(
+            br#"{"version":3,"sources":["webpack:///src/a.js","../../evil.js","missing.js"],"sourcesContent":["A","B",null],"mappings":""}"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (w, missing) = unpack(&map, dir.path()).unwrap();
+        assert_eq!(w.len(), 2);
+        assert_eq!(missing, 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("src/a.js")).unwrap(),
+            "A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("evil.js")).unwrap(),
+            "B"
+        );
+        assert!(w.iter().all(|p| p.starts_with(dir.path())));
+    }
+
+    #[test]
+    fn inline_maps() {
+        let m =
+            inline_source_map("data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozfQ==")
+                .unwrap();
+        assert_eq!(m, br#"{"version":3}"#);
+    }
+}

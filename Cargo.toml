@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = ["crates/rex-core", "crates/rex-report", "crates/rex-binary", "crates/rex-web", "crates/rex-code", "crates/rex-engine", "crates/rex-mcp", "crates/rex-ai", "crates/rex-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Abhishek Mittal"]
+repository = "https://github.com/aabhimittal/reverse-engineer"
+homepage = "https://github.com/aabhimittal/reverse-engineer"
+rust-version = "1.85"
+keywords = ["reverse-engineering", "binary-analysis", "malware", "openapi", "disassembler"]
+categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+
+[workspace.dependencies]
+rex-core = { path = "crates/rex-core", version = "0.1.0" }
+rex-report = { path = "crates/rex-report", version = "0.1.0" }
+rex-binary = { path = "crates/rex-binary", version = "0.1.0" }
+rex-web = { path = "crates/rex-web", version = "0.1.0" }
+rex-code = { path = "crates/rex-code", version = "0.1.0" }
+rex-ai = { path = "crates/rex-ai", version = "0.1.0" }
+rex-mcp = { path = "crates/rex-mcp", version = "0.1.0" }
+rex-engine = { path = "crates/rex-engine", version = "0.1.0" }
+
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+rayon = "1.12"
+regex = "1.11"
+memchr = "2.7"
+md-5 = "0.11"
+sha1 = "0.11"
+sha2 = "0.11"
+goblin = "0.10"
+gimli = { version = "0.33", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "write", "std"] }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
+petgraph = { version = "0.8", default-features = false, features = ["graphmap", "stable_graph", "std"] }
+cpp_demangle = "0.5"
+rustc-demangle = "0.1"
+tlsh2 = { version = "1.1", features = ["diff"] }
+flate2 = "1.1"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+ignore = "0.4"
+tree-sitter = "0.27"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+assert_cmd = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 2

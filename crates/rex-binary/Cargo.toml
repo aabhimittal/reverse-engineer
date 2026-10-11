@@ -1,0 +1,39 @@
+[package]
+name = "rex-binary"
+description = "Binary and firmware reverse engineering: ELF/PE/Mach-O parsing, checksec, disassembly, CFGs, capabilities, carving and diffing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+## Disassemble ARM, AArch64, MIPS, PowerPC, RISC-V via Capstone (builds C code).
+multiarch = ["dep:capstone"]
+## Full YARA rule scanning via the pure-Rust YARA-X engine (large dependency).
+yara = ["dep:yara-x"]
+
+[dependencies]
+rex-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+goblin.workspace = true
+gimli.workspace = true
+iced-x86.workspace = true
+petgraph.workspace = true
+cpp_demangle.workspace = true
+rustc-demangle.workspace = true
+tlsh2.workspace = true
+flate2.workspace = true
+memchr.workspace = true
+regex.workspace = true
+md-5.workspace = true
+capstone = { version = "0.14", optional = true }
+yara-x = { version = "1.21", optional = true, default-features = false }
+
+[dev-dependencies]
+object.workspace = true
+tempfile.workspace = true
+rex-report.workspace = true

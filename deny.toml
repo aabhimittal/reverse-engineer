@@ -1,0 +1,35 @@
+[graph]
+# Audit every optional feature (yara, multiarch, ...), not just the defaults, so a local
+# `cargo deny check` sees exactly what CI sees.
+all-features = true
+
+[advisories]
+version = 2
+# All five ids below arrive only through the opt-in `yara` feature (yara-x 1.21.0, the latest
+# release, pins wasmtime 45.0.3 exactly, so we cannot upgrade past them). Reviewed against
+# yara-x's source: it enables only wasmtime's `cranelift` + `runtime` features (no component
+# model, async or WASI), runs one shared Engine, and only executes WebAssembly produced by its
+# own rule compiler from rules the operator chose. rex never calls Rules::deserialize on
+# untrusted bytes. Revisit and remove these when yara-x moves to a patched wasmtime.
+ignore = [
+  { id = "RUSTSEC-2026-0222", reason = "wasmtime: needs multiple Engines sharing a Store; yara-x uses a single global Engine" },
+  { id = "RUSTSEC-2026-0269", reason = "wasmtime: WASI filesystem sandbox escape; yara-x does not use WASI or the filesystem from wasm" },
+  { id = "RUSTSEC-2026-0316", reason = "wasmtime: component-model record lifting; yara-x does not enable the component model" },
+  { id = "RUSTSEC-2026-0327", reason = "wasmtime: component-model async callbacks; yara-x does not enable the component model or async" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained (not vulnerable); transitive via yara-x, no safe upgrade exists" },
+]
+
+[licenses]
+version = 2
+# Permissive licenses only (no copyleft). CDLA-Permissive-2.0 covers webpki-roots (CA certificates, via rustls).
+allow = [
+  "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
+  "ISC", "Unicode-3.0", "Zlib", "MPL-2.0", "CDLA-Permissive-2.0", "BSL-1.0", "CC0-1.0", "0BSD",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

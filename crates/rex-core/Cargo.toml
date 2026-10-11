@@ -1,0 +1,23 @@
+[package]
+name = "rex-core"
+description = "Core artifact model, detection, findings and analyzer registry for the rex reverse-engineering toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rayon.workspace = true
+regex.workspace = true
+md-5.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

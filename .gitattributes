@@ -1,0 +1,10 @@
+# Normalise text to LF everywhere (including Windows checkouts) and never touch binaries.
+* text=auto eol=lf
+*.elf binary
+*.exe binary
+*.macho binary
+*.apk binary
+*.bin binary
+*.dex binary
+*.png binary
+*.gz binary
