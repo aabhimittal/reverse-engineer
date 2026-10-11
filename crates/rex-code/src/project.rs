@@ -137,7 +137,11 @@ fn inline_test_start(lang: Lang, src: &str) -> Option<u32> {
 }
 
 fn looks_generated(src: &str) -> bool {
-    let head = &src[..src.len().min(2048)];
+    let mut stop = src.len().min(2048);
+    while !src.is_char_boundary(stop) {
+        stop -= 1;
+    }
+    let head = &src[..stop];
     let lines = src.lines().count().max(1);
     head.contains("@generated")
         || head.contains("DO NOT EDIT")

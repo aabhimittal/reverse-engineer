@@ -129,7 +129,11 @@ pub fn analyze(src: &str) -> JsReport {
         // fetch(url, { method: "POST" }): look a little way past the URL for an options object.
         if c.get(1).is_none() && c.get(3).is_none() {
             let end = c.get(0).expect("match").end();
-            let tail = &src[end..src.len().min(end + 160)];
+            let mut stop = src.len().min(end + 160);
+            while !src.is_char_boundary(stop) {
+                stop -= 1;
+            }
+            let tail = &src[end..stop];
             let tail = tail.split(')').next().unwrap_or(tail);
             if let Some(mm) = p.method.captures(tail) {
                 method = mm[1].to_ascii_uppercase();

@@ -1,0 +1,15 @@
+[book]
+title = "The rex Reverse Engineering Handbook"
+authors = ["Abhishek Mittal", "rex contributors"]
+description = "Learn reverse engineering end to end: binaries, firmware, Android, web APIs and codebases, with hands-on labs."
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/aabhimittal/reverse-engineer"
+edit-url-template = "https://github.com/aabhimittal/reverse-engineer/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+enable = true

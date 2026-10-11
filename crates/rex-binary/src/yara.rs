@@ -71,3 +71,36 @@ pub fn scan(rules: &yara_x::Rules, data: &[u8]) -> Result<Vec<YaraMatch>> {
         })
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_rules_compile_and_match() {
+        let rules = compile(None).unwrap();
+        let clean = scan(&rules, b"just some ordinary bytes").unwrap();
+        assert!(clean.is_empty());
+        let hit = scan(&rules, b"cmd /c vssadmin delete shadows /all /quiet").unwrap();
+        assert!(
+            hit.iter().any(|m| m.rule == "rex_shadow_copy_deletion"),
+            "{hit:?}"
+        );
+    }
+
+    #[test]
+    fn user_rules_are_loaded() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("mine.yar"),
+            "rule mine { strings: $a = \"rexlab-marker\" condition: $a }",
+        )
+        .unwrap();
+        let rules = compile(Some(d.path())).unwrap();
+        let hit = scan(&rules, b"xx rexlab-marker xx").unwrap();
+        assert!(
+            hit.iter()
+                .any(|m| m.rule == "mine" && m.namespace == "mine")
+        );
+    }
+}

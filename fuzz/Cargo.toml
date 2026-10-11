@@ -1,0 +1,40 @@
+[package]
+name = "rex-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rex-core = { path = "../crates/rex-core" }
+rex-binary = { path = "../crates/rex-binary" }
+rex-web = { path = "../crates/rex-web" }
+
+[workspace]
+
+[[bin]]
+name = "binary_parse"
+path = "fuzz_targets/binary_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "carve"
+path = "fuzz_targets/carve.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "axml_dex"
+path = "fuzz_targets/axml_dex.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "har"
+path = "fuzz_targets/har.rs"
+test = false
+doc = false

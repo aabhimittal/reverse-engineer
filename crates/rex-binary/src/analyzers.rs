@@ -679,14 +679,18 @@ impl Analyzer for Functions {
         let prog = functions::analyze(&b, a.data(), opts);
         let mut out = AnalyzerOutput::new();
         if prog.unsupported_arch {
-            out.section(Section::text(
-                "binary.functions",
-                "Functions",
+            let hint = if cfg!(feature = "multiarch") {
                 format!(
-                    "Control-flow recovery is built in for x86/x64. {} code needs the `multiarch` feature for disassembly (`cargo install rex-cli --features multiarch`).",
+                    "Control-flow recovery is currently x86/x64 only. For {} use `rex disasm <file> --function <name>` (linear Capstone disassembly).",
                     b.arch.name()
-                ),
-            ));
+                )
+            } else {
+                format!(
+                    "Control-flow recovery is currently x86/x64 only. {} disassembly needs the `multiarch` feature (`cargo install rex-cli --features multiarch`).",
+                    b.arch.name()
+                )
+            };
+            out.section(Section::text("binary.functions", "Functions", hint));
             return Ok(out);
         }
         let callers = prog.callers();
