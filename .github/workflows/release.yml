@@ -41,6 +41,9 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          # Ubuntu's gcc turns on _FORTIFY_SOURCE, which emits glibc-only symbols (__fprintf_chk,
+          # __snprintf_chk) that the musl target cannot link. Found by the first rehearsal.
+          echo "CFLAGS_aarch64_unknown_linux_musl=-U_FORTIFY_SOURCE" >> "$GITHUB_ENV"
       - run: cargo build --release -p rex-cli --target ${{ matrix.target }}
       - name: package
         shell: bash
@@ -102,6 +105,13 @@ jobs:
         run: |
           REX_VERSION="$VERSION" REX_BASE_URL="file://$PWD/dist" REX_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: The aarch64 binary runs (under qemu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-user
+          mkdir arm && tar xzf "dist/rex-${VERSION}-aarch64-unknown-linux-musl.tar.gz" -C arm
+          qemu-aarch64 "arm/rex-${VERSION}-aarch64-unknown-linux-musl/rex" --version
+          qemu-aarch64 "arm/rex-${VERSION}-aarch64-unknown-linux-musl/rex" analyze labs/wasm/sample.wasm
       - name: The installed binary works
         run: |
           rex --version
