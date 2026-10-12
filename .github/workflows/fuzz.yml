@@ -26,13 +26,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - run: cargo install cargo-fuzz --locked
+      # rust-toolchain.toml pins stable for the workspace; fuzzing needs nightly explicitly.
+      - run: cargo +nightly install cargo-fuzz --locked
       - name: Seed the corpus with the repository's fixtures and labs
         run: |
           mkdir -p "fuzz/corpus/${{ matrix.target }}"
           find crates/rex-binary/tests/fixtures labs -type f -size -2M -exec cp {} "fuzz/corpus/${{ matrix.target }}/" \; 2>/dev/null || true
       - name: Fuzz ${{ matrix.target }} for ${{ env.SECS }}s
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=$SECS -rss_limit_mb=2048 -timeout=20 -detect_leaks=0 -max_len=1048576
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=$SECS -rss_limit_mb=2048 -timeout=20 -detect_leaks=0 -max_len=1048576
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -308,12 +308,16 @@ fn missing_and_special_paths_are_clean_errors() {
         std::os::unix::fs::symlink(d.path().join("loop-b"), &a).unwrap();
         std::os::unix::fs::symlink(&a, d.path().join("loop-b")).unwrap();
         assert_eq!(run(&["analyze"], &a).0, 1);
-        // Non-UTF-8 file name.
+        // Non-UTF-8 file name. macOS (APFS) refuses to create one at all, so this only runs
+        // where the filesystem allows it.
         let odd = d
             .path()
             .join(std::ffi::OsStr::from_bytes(b"bin\xff\xfe.elf"));
-        std::fs::write(&odd, fixture("crackme.elf")).unwrap();
-        assert_eq!(run(&["analyze"], &odd).0, 0);
+        if std::fs::write(&odd, fixture("crackme.elf")).is_ok() {
+            assert_eq!(run(&["analyze"], &odd).0, 0);
+        } else if !cfg!(target_os = "macos") {
+            panic!("could not create a non-UTF-8 file name");
+        }
         // A FIFO blocks forever if read; a device never ends. Both are refused, not read.
         let fifo = d.path().join("fifo");
         assert!(
