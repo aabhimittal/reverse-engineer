@@ -49,6 +49,9 @@ struct Global {
     /// Maximum rows per table (0 = unlimited).
     #[arg(long, global = true, default_value_t = 50)]
     max_rows: usize,
+    /// Stop function discovery after this many functions (large binaries are reported as partial).
+    #[arg(long, global = true, default_value_t = 5000)]
+    max_functions: usize,
     /// Refuse inputs larger than this many MiB.
     #[arg(long, global = true, default_value_t = 1024)]
     max_size: u64,
@@ -429,6 +432,7 @@ fn run(cli: Cli) -> Result<i32> {
     let ctx = Ctx {
         opts: AnalysisOptions {
             max_rows: cli.global.max_rows,
+            max_functions: cli.global.max_functions,
             ..Default::default()
         },
         g: cli.global,

@@ -1,0 +1,40 @@
+name: Fuzz
+
+# Short runs on every PR that touches a parser; longer runs weekly. A crash fails the job and the
+# reproducer is uploaded as an artifact (run it with `cargo fuzz run <target> <file>`).
+on:
+  pull_request:
+    paths: ["crates/**", "fuzz/**", ".github/workflows/fuzz.yml"]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [binary_parse, carve, axml_dex, har, wasm_asar, analyze_all]
+    env:
+      # iced-x86 builds its decoder tables once in a lazy_static and never frees them.
+      ASAN_OPTIONS: detect_leaks=0
+      SECS: ${{ github.event_name == 'schedule' && 600 || 60 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Seed the corpus with the repository's fixtures and labs
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          find crates/rex-binary/tests/fixtures labs -type f -size -2M -exec cp {} "fuzz/corpus/${{ matrix.target }}/" \; 2>/dev/null || true
+      - name: Fuzz ${{ matrix.target }} for ${{ env.SECS }}s
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=$SECS -rss_limit_mb=2048 -timeout=20 -detect_leaks=0 -max_len=1048576
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

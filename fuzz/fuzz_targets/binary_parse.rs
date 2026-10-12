@@ -3,6 +3,7 @@ use libfuzzer_sys::fuzz_target;
 
 // Hostile executables must never panic or hang: parse, then recover functions.
 fuzz_target!(|data: &[u8]| {
+    rex_fuzz::only_rex_panics_are_bugs();
     if let Ok(b) = rex_binary::Binary::parse(data) {
         let opts = rex_core::AnalysisOptions { max_functions: 200, max_insns_per_function: 2000, ..Default::default() };
         let _ = rex_binary::functions::analyze(&b, data, &opts);

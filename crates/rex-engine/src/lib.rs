@@ -50,7 +50,7 @@ fn native(a: &Artifact) -> Result<Binary> {
             a.kind()
         )));
     }
-    Binary::parse(a.data())
+    Ok(Binary::of(a)?.as_ref().clone())
 }
 
 fn new_report(title: String, a: &Artifact) -> Report {
@@ -244,10 +244,44 @@ pub fn functions_report(a: &Artifact, opts: &AnalysisOptions) -> Result<Report> 
             rows,
             0,
         )
-        .with_data(&p),
+        .with_data(program_summary(&p)),
     );
     rep.duration_ms = start.elapsed().as_millis() as u64;
     Ok(rep)
+}
+
+/// Machine-readable shape of a recovered program without the instruction listings. Serializing
+/// every instruction of every block made `rex functions` spend most of its time in serde on large
+/// binaries (a Go hello world has ~2M instructions); `rex disasm` is the way to get listings.
+fn program_summary(p: &Program) -> serde_json::Value {
+    let funcs: Vec<serde_json::Value> = p
+        .functions
+        .values()
+        .map(|f| {
+            serde_json::json!({
+                "addr": f.addr,
+                "name": f.name,
+                "size": f.size,
+                "insns": f.insn_count(),
+                "cyclomatic": f.cyclomatic(),
+                "blocks": f.blocks.iter().map(|b| serde_json::json!({
+                    "start": b.start,
+                    "end": b.end,
+                    "succs": b.succs,
+                })).collect::<Vec<_>>(),
+                "calls": f.calls,
+                "imports_called": f.imports_called,
+                "strings": f.strings,
+                "thunk_to": f.thunk_to,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "functions": funcs,
+        "stubs": p.stubs,
+        "main": p.main,
+        "unsupported_arch": p.unsupported_arch,
+    })
 }
 
 /// Disassemble a function (by name/address) or a raw range.

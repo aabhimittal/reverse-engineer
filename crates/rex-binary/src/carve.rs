@@ -126,11 +126,14 @@ fn v_elf(b: &[u8]) -> Option<(Option<u64>, String)> {
         return None;
     }
     let size = goblin::elf::Elf::parse(b).ok().map(|e| {
-        let sh = e.header.e_shoff + e.header.e_shnum as u64 * e.header.e_shentsize as u64;
+        let sh = e
+            .header
+            .e_shoff
+            .saturating_add(e.header.e_shnum as u64 * e.header.e_shentsize as u64);
         let ph = e
             .program_headers
             .iter()
-            .map(|p| p.p_offset + p.p_filesz)
+            .map(|p| p.p_offset.saturating_add(p.p_filesz))
             .max()
             .unwrap_or(0);
         sh.max(ph)

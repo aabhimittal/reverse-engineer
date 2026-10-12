@@ -258,6 +258,19 @@ pub struct Binary {
 }
 
 impl Binary {
+    /// Parse an artifact once and share the result with every other caller on the same artifact
+    /// (a full `rex analyze` used to parse the same file once per analyzer).
+    pub fn of(a: &rex_core::Artifact) -> Result<std::sync::Arc<Self>> {
+        a.memo(|a| {
+            Self::parse(a.data())
+                .map(std::sync::Arc::new)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .clone()
+        .map_err(|e| Error::parse("binary", e))
+    }
+
     /// Parse any supported format.
     ///
     /// Third-party parsers occasionally panic on hostile input; such panics are
@@ -338,8 +351,10 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| va >= s.addr && va < s.addr + s.file_size)?;
-        Some(self.slice_offset + s.offset + (va - s.addr))
+            .find(|s| va >= s.addr && va - s.addr < s.file_size)?;
+        self.slice_offset
+            .checked_add(s.offset)?
+            .checked_add(va - s.addr)
     }
 
     /// Translate a file offset (in the original file) to a virtual address.
@@ -348,8 +363,8 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| off >= s.offset && off < s.offset + s.file_size)?;
-        Some(s.addr + (off - s.offset))
+            .find(|s| off >= s.offset && off - s.offset < s.file_size)?;
+        s.addr.checked_add(off - s.offset)
     }
 
     /// Borrow bytes starting at a virtual address, bounded by its section.
@@ -357,15 +372,17 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| va >= s.addr && va < s.addr + s.file_size)?;
-        let start = (self.slice_offset + s.offset + (va - s.addr)) as usize;
-        let end = (self.slice_offset + s.offset + s.file_size) as usize;
+            .find(|s| va >= s.addr && va - s.addr < s.file_size)?;
+        let base = self.slice_offset.checked_add(s.offset)?;
+        let start = usize::try_from(base.checked_add(va - s.addr)?).ok()?;
+        let end = usize::try_from(base.saturating_add(s.file_size)).unwrap_or(usize::MAX);
         data.get(start..end.min(data.len()))
     }
 
     /// Bytes of a section.
     pub fn section_bytes<'d>(&self, data: &'d [u8], s: &SectionInfo) -> &'d [u8] {
-        let start = (self.slice_offset + s.offset) as usize;
+        let start =
+            usize::try_from(self.slice_offset.saturating_add(s.offset)).unwrap_or(usize::MAX);
         let end = start.saturating_add(s.file_size as usize).min(data.len());
         data.get(start..end).unwrap_or(&[])
     }
@@ -727,18 +744,22 @@ fn elf_eh_frame_starts(b: &Binary, data: &[u8]) -> Vec<u64> {
 }
 
 fn elf_end(e: &elf::Elf) -> u64 {
-    let sh_end = e.header.e_shoff + e.header.e_shnum as u64 * e.header.e_shentsize as u64;
+    // Every field here is attacker-controlled: add without overflowing.
+    let sh_end = e
+        .header
+        .e_shoff
+        .saturating_add(e.header.e_shnum as u64 * e.header.e_shentsize as u64);
     let seg_end = e
         .program_headers
         .iter()
-        .map(|p| p.p_offset + p.p_filesz)
+        .map(|p| p.p_offset.saturating_add(p.p_filesz))
         .max()
         .unwrap_or(0);
     let sec_end = e
         .section_headers
         .iter()
         .filter(|s| s.sh_type != elf::section_header::SHT_NOBITS)
-        .map(|s| s.sh_offset + s.sh_size)
+        .map(|s| s.sh_offset.saturating_add(s.sh_size))
         .max()
         .unwrap_or(0);
     sh_end.max(seg_end).max(sec_end)
@@ -947,6 +968,83 @@ fn macho_arch(cputype: u32) -> Arch {
     }
 }
 
+/// Exported symbols from the dyld export trie, as (name, offset from the `__TEXT` base).
+///
+/// goblin's own walker follows child edges without remembering where it has been, so a trie whose
+/// nodes point back at each other makes it allocate until the process dies (an 18 KB file took
+/// 3 GB). This reader visits each node once and caps the work.
+fn macho_export_trie(m: &mach::MachO, data: &[u8], slice_offset: u64) -> Vec<(String, u64)> {
+    use mach::load_command::CommandVariant;
+    const MAX_NODES: usize = 200_000;
+    const MAX_NAME: usize = 4096;
+    let (off, size) = match m.load_commands.iter().find_map(|lc| match &lc.command {
+        CommandVariant::DyldInfo(c) | CommandVariant::DyldInfoOnly(c) => {
+            Some((c.export_off as u64, c.export_size as u64))
+        }
+        CommandVariant::DyldExportsTrie(c) => Some((c.dataoff as u64, c.datasize as u64)),
+        _ => None,
+    }) {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let start = slice_offset.saturating_add(off) as usize;
+    let Some(trie) = data.get(start..start.saturating_add(size as usize).min(data.len())) else {
+        return Vec::new();
+    };
+    fn uleb(t: &[u8], at: &mut usize) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let b = *t.get(*at)?;
+            *at += 1;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<(usize, String)> = vec![(0, String::new())];
+    while let Some((node, prefix)) = stack.pop() {
+        if !seen.insert(node) || seen.len() > MAX_NODES {
+            continue;
+        }
+        let mut at = node;
+        let Some(terminal) = uleb(trie, &mut at) else {
+            continue;
+        };
+        let children_at = at.saturating_add(terminal as usize);
+        if terminal > 0 {
+            let flags = uleb(trie, &mut at).unwrap_or(0);
+            // Re-exports name another dylib's symbol and carry no address of their own.
+            if flags & 0x08 == 0 {
+                if let Some(addr) = uleb(trie, &mut at) {
+                    out.push((prefix.clone(), addr));
+                }
+            }
+        }
+        let mut at = children_at;
+        let Some(&count) = trie.get(at) else { continue };
+        at += 1;
+        for _ in 0..count {
+            let Some(len) = trie.get(at..).and_then(|r| r.iter().position(|&b| b == 0)) else {
+                break;
+            };
+            let edge = String::from_utf8_lossy(&trie[at..at + len]);
+            at += len + 1;
+            let Some(child) = uleb(trie, &mut at) else {
+                break;
+            };
+            if prefix.len() + edge.len() <= MAX_NAME {
+                stack.push((child as usize, format!("{prefix}{edge}")));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) -> Binary {
     let mut sections = Vec::new();
     for seg in m.segments.iter() {
@@ -1029,19 +1127,15 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
             }
         }
     }
-    let exports: Vec<Symbol> = m
-        .exports()
-        .unwrap_or_default()
+    let text_base = m
+        .segments
+        .iter()
+        .find(|s| s.name().ok() == Some("__TEXT"))
+        .map(|s| s.vmaddr)
+        .unwrap_or(0);
+    let exports: Vec<Symbol> = macho_export_trie(m, data, slice_offset)
         .into_iter()
-        .map(|e| {
-            let base = m
-                .segments
-                .iter()
-                .find(|s| s.name().ok() == Some("__TEXT"))
-                .map(|s| s.vmaddr)
-                .unwrap_or(0);
-            sym(&e.name, base + e.offset, e.size as u64, SymKind::Func)
-        })
+        .map(|(name, off)| sym(&name, text_base.wrapping_add(off), 0, SymKind::Func))
         .collect();
 
     use mach::header::*;

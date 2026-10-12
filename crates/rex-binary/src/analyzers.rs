@@ -50,7 +50,7 @@ impl Analyzer for Info {
         10
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let mut out = AnalyzerOutput::new();
         let mut kv: Vec<(String, String)> = vec![
             (
@@ -90,7 +90,7 @@ impl Analyzer for Info {
                 format!("{} bytes at {:#x}", a.size() - o, o),
             ));
         }
-        out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&b));
+        out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&*b));
 
         let rows = b
             .sections
@@ -202,12 +202,8 @@ impl Analyzer for Hashes {
         15
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let bin = if native(a) {
-            Binary::parse(a.data()).ok()
-        } else {
-            None
-        };
-        let fp = fingerprint::compute(a.data(), bin.as_ref());
+        let bin = if native(a) { Binary::of(a).ok() } else { None };
+        let fp = fingerprint::compute(a.data(), bin.as_deref());
         let mut kv = vec![
             ("MD5", fp.md5.clone()),
             ("SHA-1", fp.sha1.clone()),
@@ -248,7 +244,7 @@ impl Analyzer for Checksec {
         20
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let mut out = AnalyzerOutput::new();
         let rows = b
             .mitigations
@@ -360,7 +356,7 @@ impl Analyzer for Packer {
         25
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let v = packer::detect(&b, a.data());
         let mut out = AnalyzerOutput::new();
         let mut kv = vec![
@@ -421,9 +417,7 @@ impl Analyzer for Capabilities {
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
         let imports = if native(a) {
-            Binary::parse(a.data())
-                .map(|b| b.import_names())
-                .unwrap_or_default()
+            Binary::of(a).map(|b| b.import_names()).unwrap_or_default()
         } else if a.kind() == ArtifactKind::Wasm {
             crate::wasm::parse(a.data())
                 .map(|m| m.imports.into_iter().map(|i| i.name).collect())
@@ -680,7 +674,7 @@ impl Analyzer for Functions {
         50
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let prog = functions::analyze(&b, a.data(), opts);
         let mut out = AnalyzerOutput::new();
         if prog.unsupported_arch {
@@ -766,6 +760,22 @@ impl Analyzer for Functions {
                 ),
             ],
         ));
+        if prog.functions.len() >= opts.max_functions {
+            out.finding(
+                Finding::new(
+                    "BIN-ANALYSIS-PARTIAL",
+                    Severity::Info,
+                    "analysis",
+                    format!(
+                        "Function discovery stopped at the {} function limit",
+                        opts.max_functions
+                    ),
+                )
+                .describe(
+                    "Code recovery covers part of the binary. Raise the limit with --max-functions to explore all of it (slower).",
+                ),
+            );
+        }
         out.section(Section::table(
             "binary.functions",
             "Functions (largest first)",
@@ -940,18 +950,14 @@ impl Analyzer for Carve {
     }
     fn supports(&self, a: &Artifact) -> bool {
         a.kind() == ArtifactKind::Blob
-            || (native(a)
-                && Binary::parse(a.data())
-                    .ok()
-                    .and_then(|b| b.overlay_offset)
-                    .is_some())
+            || (native(a) && Binary::of(a).ok().and_then(|b| b.overlay_offset).is_some())
     }
     fn priority(&self) -> i32 {
         60
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
         let (base, data) = if native(a) {
-            let o = Binary::parse(a.data())?.overlay_offset.unwrap_or(0) as usize;
+            let o = Binary::of(a)?.overlay_offset.unwrap_or(0) as usize;
             (o as u64, &a.data()[o..])
         } else {
             (0, a.data())

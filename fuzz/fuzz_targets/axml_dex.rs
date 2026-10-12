@@ -2,6 +2,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
+    rex_fuzz::only_rex_panics_are_bugs();
     if let Ok(x) = rex_web::axml::parse(data) {
         let _ = rex_web::axml::Manifest::from_xml(&x);
         let _ = x.to_xml();
