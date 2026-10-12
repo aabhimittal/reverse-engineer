@@ -92,6 +92,71 @@ impl Analyzer for Info {
         }
         out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&*b));
 
+        // .NET: the metadata names everything the CIL code defines and depends on.
+        if let Some(dn) = &b.dotnet {
+            let mut kv = vec![
+                ("Runtime".to_string(), dn.runtime.clone()),
+                (
+                    "Assembly".to_string(),
+                    dn.assembly
+                        .as_ref()
+                        .map(|(n, v)| format!("{n} {v}"))
+                        .unwrap_or_else(|| "(module only)".into()),
+                ),
+                ("Types".to_string(), dn.type_count.to_string()),
+                ("Methods".to_string(), dn.method_count.to_string()),
+                ("IL only".to_string(), dn.il_only.to_string()),
+                (
+                    "Strong-name signed".to_string(),
+                    dn.strong_named.to_string(),
+                ),
+                (
+                    "String literals".to_string(),
+                    dn.user_strings.len().to_string(),
+                ),
+            ];
+            if !dn.pinvokes.is_empty() {
+                kv.push((
+                    "P/Invoke imports".to_string(),
+                    dn.pinvokes.len().to_string(),
+                ));
+            }
+            out.section(Section::kv("binary.dotnet", ".NET assembly", kv).with_data(dn));
+            if !dn.assembly_refs.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.refs",
+                    "Referenced assemblies",
+                    &["assembly", "version"],
+                    dn.assembly_refs
+                        .iter()
+                        .map(|(n, v)| vec![n.clone(), v.clone()])
+                        .collect(),
+                    opts.max_rows,
+                ));
+            }
+            if !dn.pinvokes.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.pinvoke",
+                    "P/Invoke (native functions called from managed code)",
+                    &["module", "function", "managed method"],
+                    dn.pinvokes
+                        .iter()
+                        .map(|(m, f, n)| vec![m.clone(), f.clone(), n.clone()])
+                        .collect(),
+                    opts.max_rows,
+                ));
+            }
+            if !dn.types.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.types",
+                    format!("Types ({})", dn.type_count),
+                    &["type"],
+                    dn.types.iter().map(|t| vec![t.clone()]).collect(),
+                    opts.max_rows,
+                ));
+            }
+        }
+
         // Go embeds its own bill of materials: main module, every dependency, build flags.
         if let Some(go) = b.go.as_ref().filter(|g| !g.go_version.is_empty()) {
             let mut rows: Vec<Vec<String>> = Vec::new();

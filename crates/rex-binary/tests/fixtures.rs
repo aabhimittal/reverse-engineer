@@ -391,3 +391,29 @@ fn arm_without_multiarch_degrades_to_unsupported_not_to_wrong_answers() {
     let p = functions::analyze(&b, &data, &AnalysisOptions::default());
     assert!(p.unsupported_arch && p.functions.is_empty());
 }
+
+#[test]
+fn dotnet_metadata_is_read_from_a_real_assembly() {
+    // Microsoft.Bcl.AsyncInterfaces 8.0.0 (netstandard2.1), MIT licensed; see THIRD_PARTY.md.
+    let data = fixture("dotnet_asyncinterfaces.dll");
+    let b = Binary::parse(&data).unwrap();
+    let dn = b.dotnet.as_ref().expect("CLI metadata");
+    assert_eq!(dn.runtime, "v4.0.30319");
+    assert_eq!(
+        dn.assembly,
+        Some(("Microsoft.Bcl.AsyncInterfaces".into(), "8.0.0.0".into()))
+    );
+    assert!(
+        dn.assembly_refs.iter().any(|(n, _)| n == "netstandard"),
+        "{:?}",
+        dn.assembly_refs
+    );
+    assert!(
+        dn.types.iter().any(|t| t.starts_with("System.")),
+        "{:?}",
+        dn.types
+    );
+    assert!(dn.method_count > 0 && dn.type_count > 0);
+    assert!(dn.il_only && dn.strong_named);
+    assert!(dn.pinvokes.is_empty());
+}

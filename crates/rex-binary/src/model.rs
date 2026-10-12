@@ -263,6 +263,9 @@ pub struct Binary {
     /// Go toolchain build information, for binaries built by Go.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub go: Option<crate::go::BuildInfo>,
+    /// .NET metadata, for managed (CLI) assemblies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dotnet: Option<crate::dotnet::DotNet>,
 }
 
 impl Binary {
@@ -772,6 +775,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         function_starts: Vec::new(),
         relocated_ptrs: elf_relative_relocs(e),
         go: None,
+        dotnet: None,
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
@@ -1019,9 +1023,66 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
         relocated_ptrs: Vec::new(),
         go: None,
+        dotnet: None,
     };
     b.mitigations = crate::checksec::pe(p, &b);
+    pe_dotnet(p, &mut b, data);
     b
+}
+
+/// Managed assemblies: read the CLI metadata, and surface P/Invoke targets as imports so the
+/// capability rules see `kernel32!VirtualAllocEx` whether it is called natively or from C#.
+fn pe_dotnet(p: &pe::PE, b: &mut Binary, data: &[u8]) {
+    let Some(dd) = p
+        .header
+        .optional_header
+        .as_ref()
+        .and_then(|o| o.data_directories.get_clr_runtime_header())
+    else {
+        return;
+    };
+    let at = |rva: u32| {
+        b.va_to_offset(b.image_base.wrapping_add(rva as u64))
+            .map(|o| o as usize)
+    };
+    let Some(cor) = at(dd.virtual_address) else {
+        return;
+    };
+    let rd32 = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            data.get(o..o.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    // IMAGE_COR20_HEADER: cb, runtime version, MetaData {rva, size}, Flags, …
+    let (Some(meta_rva), Some(meta_size), Some(flags)) =
+        (rd32(cor + 8), rd32(cor + 12), rd32(cor + 16))
+    else {
+        return;
+    };
+    let Some(meta) = at(meta_rva) else { return };
+    let Some(blob) = data.get(meta..meta.saturating_add(meta_size as usize).min(data.len())) else {
+        return;
+    };
+    let Some(dn) = crate::dotnet::parse(blob, flags) else {
+        return;
+    };
+    for (module, name, _) in &dn.pinvokes {
+        let lib = if module.contains('.') {
+            module.clone()
+        } else {
+            format!("{module}.dll")
+        };
+        b.imports.push(Import {
+            library: Some(lib.to_ascii_lowercase()),
+            name: name.clone(),
+            slot: None,
+        });
+    }
+    b.extras.push((".NET runtime".into(), dn.runtime.clone()));
+    if let Some((n, v)) = &dn.assembly {
+        b.extras.push((".NET assembly".into(), format!("{n} {v}")));
+    }
+    b.dotnet = Some(dn);
 }
 
 /// Format a unix timestamp as `YYYY-MM-DD HH:MM:SS UTC` without a date library.
@@ -1304,6 +1365,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         function_starts: macho_function_starts(m, data),
         relocated_ptrs: Vec::new(),
         go: None,
+        dotnet: None,
     };
     b.mitigations = crate::checksec::macho(m, &b, data);
     b

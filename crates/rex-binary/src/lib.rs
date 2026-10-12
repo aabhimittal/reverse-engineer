@@ -25,6 +25,7 @@ pub mod carve;
 mod checksec;
 pub mod diff;
 pub mod disasm;
+pub mod dotnet;
 pub mod fingerprint;
 pub mod functions;
 pub mod go;
