@@ -27,6 +27,7 @@ pub mod diff;
 pub mod disasm;
 pub mod fingerprint;
 pub mod functions;
+pub mod go;
 pub mod model;
 pub mod packer;
 pub mod strings;

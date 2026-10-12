@@ -8,6 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # The Go tests build Go binaries on the fly; GitHub runners ship Go, so never skip them here.
+  REX_REQUIRE_GO: "1"
 
 jobs:
   test:

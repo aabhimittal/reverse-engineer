@@ -260,6 +260,9 @@ pub struct Binary {
     /// pointer lives in the relocation addend (e.g. the GOT slot glibc's PIE `_start` loads
     /// `main` from).
     pub relocated_ptrs: Vec<(u64, u64)>,
+    /// Go toolchain build information, for binaries built by Go.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub go: Option<crate::go::BuildInfo>,
 }
 
 impl Binary {
@@ -281,8 +284,12 @@ impl Binary {
     /// Third-party parsers occasionally panic on hostile input; such panics are
     /// converted into [`Error::Parse`] so callers never crash on a malformed file.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        std::panic::catch_unwind(|| Self::parse_inner(data))
-            .unwrap_or_else(|_| Err(Error::parse("binary", "malformed input (parser panicked)")))
+        std::panic::catch_unwind(|| {
+            let mut b = Self::parse_inner(data)?;
+            enrich_go(&mut b, data);
+            Ok(b)
+        })
+        .unwrap_or_else(|_| Err(Error::parse("binary", "malformed input (parser panicked)")))
     }
 
     fn parse_inner(data: &[u8]) -> Result<Self> {
@@ -465,6 +472,58 @@ fn elf_arch(machine: u16, bits64: bool) -> Arch {
         EM_RISCV => Arch::RiscV,
         m => Arch::Other(format!("{} ({m})", elf::header::machine_to_str(m))),
     }
+}
+
+/// Go binaries: record the build info, name functions from the pclntab (it survives
+/// stripping), and stop judging Go code by libc hardening flags that don't apply to it.
+fn enrich_go(b: &mut Binary, data: &[u8]) {
+    let hint = b
+        .sections
+        .iter()
+        .find(|s| s.name == ".gopclntab" || s.name == "__gopclntab")
+        .map(|s| b.slice_offset.saturating_add(s.offset) as usize);
+    let info = crate::go::build_info(data);
+    if info.is_none() && hint.is_none() {
+        return;
+    }
+    let funcs = crate::go::functions(data, hint, b.little_endian);
+    if info.is_none() && funcs.is_empty() {
+        return;
+    }
+    let known: std::collections::HashSet<u64> = b
+        .symbols
+        .iter()
+        .filter(|s| s.kind == SymKind::Func)
+        .map(|s| s.addr)
+        .collect();
+    let new: Vec<Symbol> = funcs
+        .iter()
+        .filter(|f| !known.contains(&f.addr) && b.va_to_offset(f.addr).is_some())
+        .map(|f| sym(&f.name, f.addr, 0, SymKind::Func))
+        .collect();
+    let added = new.len();
+    b.symbols.extend(new);
+    b.symbols.sort_by_key(|s| s.addr);
+    if let Some(i) = &info {
+        b.extras.push(("Go version".into(), i.go_version.clone()));
+        if let Some(p) = &i.path {
+            b.extras.push(("Go main package".into(), p.clone()));
+        }
+    }
+    b.extras.push((
+        "Go function table".into(),
+        format!(
+            "{} functions ({added} not in the symbol table)",
+            funcs.len()
+        ),
+    ));
+    for m in &mut b.mitigations {
+        if matches!(m.name, "FORTIFY_SOURCE" | "Stack canary") {
+            m.status = MitigationStatus::Unknown;
+            m.detail = "not applicable: Go code does not use libc's fortified functions or stack protector (the Go runtime checks stack bounds itself)".into();
+        }
+    }
+    b.go = info.or_else(|| Some(crate::go::BuildInfo::default()));
 }
 
 /// RELATIVE relocations with an explicit addend: slot address -> pointer value at load time
@@ -712,6 +771,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         slice_size: data.len() as u64,
         function_starts: Vec::new(),
         relocated_ptrs: elf_relative_relocs(e),
+        go: None,
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
@@ -958,6 +1018,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
             .unwrap_or_default(),
         // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
         relocated_ptrs: Vec::new(),
+        go: None,
     };
     b.mitigations = crate::checksec::pe(p, &b);
     b
@@ -1242,6 +1303,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         slice_size,
         function_starts: macho_function_starts(m, data),
         relocated_ptrs: Vec::new(),
+        go: None,
     };
     b.mitigations = crate::checksec::macho(m, &b, data);
     b
