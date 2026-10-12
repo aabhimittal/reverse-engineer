@@ -1003,11 +1003,17 @@ fn macho_export_trie(m: &mach::MachO, data: &[u8], slice_offset: u64) -> Vec<(St
         }
         None
     }
+    // Budget the whole walk, not just the node count: each node can queue up to 255 children,
+    // so also cap the queued work and the bytes of name prefixes held at once.
+    const MAX_PENDING: usize = 100_000;
+    const MAX_PREFIX_BYTES: usize = 16 << 20;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut stack: Vec<(usize, String)> = vec![(0, String::new())];
+    let mut held = 0usize;
     while let Some((node, prefix)) = stack.pop() {
-        if !seen.insert(node) || seen.len() > MAX_NODES {
+        held -= prefix.len();
+        if seen.len() >= MAX_NODES || !seen.insert(node) {
             continue;
         }
         let mut at = node;
@@ -1036,9 +1042,17 @@ fn macho_export_trie(m: &mach::MachO, data: &[u8], slice_offset: u64) -> Vec<(St
             let Some(child) = uleb(trie, &mut at) else {
                 break;
             };
-            if prefix.len() + edge.len() <= MAX_NAME {
-                stack.push((child as usize, format!("{prefix}{edge}")));
+            let child = child as usize;
+            let name_len = prefix.len() + edge.len();
+            if seen.contains(&child)
+                || name_len > MAX_NAME
+                || stack.len() >= MAX_PENDING
+                || held + name_len > MAX_PREFIX_BYTES
+            {
+                continue;
             }
+            held += name_len;
+            stack.push((child, format!("{prefix}{edge}")));
         }
     }
     out.sort();
