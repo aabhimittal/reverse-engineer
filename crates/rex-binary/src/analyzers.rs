@@ -92,6 +92,40 @@ impl Analyzer for Info {
         }
         out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&*b));
 
+        // The manifest decides how Windows starts the program: an elevation prompt, or UI access to
+        // other processes' windows (UIPI bypass) for signed binaries in secure locations.
+        let extra = |k: &str| {
+            b.extras
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        if let Some(l @ ("requireAdministrator" | "highestAvailable")) =
+            extra("Manifest: requestedExecutionLevel")
+        {
+            out.finding(
+                Finding::new(
+                    "BIN-PE-MANIFEST-ELEVATION",
+                    Severity::Info,
+                    "privilege",
+                    format!("Manifest requests elevation ({l})"),
+                )
+                .describe("Windows shows a UAC prompt and runs the program as administrator.")
+                .evidence(format!("requestedExecutionLevel level=\"{l}\"")),
+            );
+        }
+        if extra("Manifest: uiAccess") == Some("true") {
+            out.finding(
+                Finding::new(
+                    "BIN-PE-MANIFEST-UIACCESS",
+                    Severity::Low,
+                    "privilege",
+                    "Manifest requests uiAccess (can drive other applications' windows)",
+                )
+                .evidence("uiAccess=\"true\""),
+            );
+        }
+
         // .NET: the metadata names everything the CIL code defines and depends on.
         if let Some(dn) = &b.dotnet {
             let mut kv = vec![

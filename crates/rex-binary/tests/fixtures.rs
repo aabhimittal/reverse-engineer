@@ -417,3 +417,34 @@ fn dotnet_metadata_is_read_from_a_real_assembly() {
     assert!(dn.il_only && dn.strong_named);
     assert!(dn.pinvokes.is_empty());
 }
+
+#[test]
+fn pe_version_info_and_manifest_elevation() {
+    let dll = Binary::parse(&fixture("dotnet_asyncinterfaces.dll")).unwrap();
+    let get = |b: &Binary, k: &str| {
+        b.extras
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get(&dll, "Version: CompanyName").as_deref(),
+        Some("Microsoft Corporation")
+    );
+    assert_eq!(
+        get(&dll, "Version: OriginalFilename").as_deref(),
+        Some("Microsoft.Bcl.AsyncInterfaces.dll")
+    );
+
+    let exe = Binary::parse(&fixture("elevated.exe")).unwrap();
+    assert_eq!(
+        get(&exe, "Manifest: requestedExecutionLevel").as_deref(),
+        Some("requireAdministrator")
+    );
+    let r = report("elevated.exe");
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.id.as_str()).collect();
+    assert!(
+        ids.contains(&"BIN-PE-MANIFEST-ELEVATION") && ids.contains(&"BIN-PE-MANIFEST-UIACCESS"),
+        "{ids:?}"
+    );
+}

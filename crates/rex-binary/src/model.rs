@@ -1027,7 +1027,53 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
     };
     b.mitigations = crate::checksec::pe(p, &b);
     pe_dotnet(p, &mut b, data);
+    pe_resources(p, &mut b);
     b
+}
+
+/// Version-info strings and the application manifest from the resource section.
+fn pe_resources(p: &pe::PE, b: &mut Binary) {
+    let Some(rd) = &p.resource_data else { return };
+    if let Some(vi) = &rd.version_info {
+        let si = &vi.string_info;
+        for (k, v) in [
+            ("CompanyName", si.company_name()),
+            ("ProductName", si.product_name()),
+            ("FileDescription", si.file_description()),
+            ("FileVersion", si.file_version()),
+            ("OriginalFilename", si.original_filename()),
+            ("InternalName", si.internal_name()),
+            ("LegalCopyright", si.legal_copyright()),
+        ] {
+            if let Some(v) = v.map(|v| v.trim_end_matches('\0').trim().to_string()) {
+                if !v.is_empty() {
+                    b.extras
+                        .push((format!("Version: {k}"), v.chars().take(200).collect()));
+                }
+            }
+        }
+    }
+    if let Some(m) = &rd.manifest_data {
+        let text = String::from_utf8_lossy(m.data);
+        let attr = |name: &str| -> Option<String> {
+            let i = text.find(name)? + name.len();
+            let rest = text[i..].trim_start().strip_prefix('=')?.trim_start();
+            let q = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let rest = &rest[1..];
+            Some(rest[..rest.find(q)?].to_string())
+        };
+        if let Some(level) = attr("requestedExecutionLevel level").or_else(|| {
+            text.contains("requestedExecutionLevel")
+                .then(|| attr("level"))
+                .flatten()
+        }) {
+            b.extras
+                .push(("Manifest: requestedExecutionLevel".into(), level));
+        }
+        if let Some(ui) = attr("uiAccess") {
+            b.extras.push(("Manifest: uiAccess".into(), ui));
+        }
+    }
 }
 
 /// Managed assemblies: read the CLI metadata, and surface P/Invoke targets as imports so the
