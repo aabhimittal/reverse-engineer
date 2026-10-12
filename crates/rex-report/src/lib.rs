@@ -212,6 +212,38 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_text_cannot_drive_the_terminal() {
+        // Clear screen, OSC window title, cursor-up, a bidi override and a C1 CSI, as they could
+        // arrive in a symbol name, a version string or a URL inside an analysed file.
+        let evil = "a\x1b[2Jb\x1b]0;pwned\x07c\x1b[1Ad\u{202E}e\u{9b}31mf";
+        let mut r = sample();
+        r.push(Section::kv("e", evil, [(evil, evil)]));
+        r.push(Section::table(
+            "t2",
+            "T",
+            &["c"],
+            vec![vec![evil.into()]],
+            0,
+        ));
+        r.findings
+            .push(Finding::new("X", Severity::Info, "x", evil).evidence(evil.to_string()));
+        for color in [false, true] {
+            let s = render(&r, Format::Text, RenderOptions { color });
+            for bad in [
+                "\x1b[2J", "\x1b]0", "\x07", "\x1b[1A", "\u{202E}", "\u{9b}", "\u{E000}",
+            ] {
+                assert!(
+                    !s.contains(bad),
+                    "color={color}: {bad:?} reached the terminal"
+                );
+            }
+            assert!(s.contains("a\\u{1b}[2Jb"), "escapes are shown, not dropped");
+            // Our own colouring still works.
+            assert_eq!(s.contains("\x1b[1;36m"), color);
+        }
+    }
+
+    #[test]
     fn text_has_no_ansi_without_color() {
         let s = render(&sample(), Format::Text, RenderOptions { color: false });
         assert!(!s.contains('\x1b'));
