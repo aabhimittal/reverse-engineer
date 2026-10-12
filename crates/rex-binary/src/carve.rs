@@ -543,7 +543,7 @@ pub fn extract(data: &[u8], carved: &[Carved], dir: &Path) -> std::io::Result<Ve
     for (i, c) in carved.iter().enumerate() {
         let start = c.offset as usize;
         let end = match c.size {
-            Some(s) => start + s as usize,
+            Some(s) => start.saturating_add(s as usize),
             None => carved
                 .iter()
                 .skip(i + 1)

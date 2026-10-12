@@ -302,7 +302,15 @@ impl Binary {
             Object::PE(p) => Ok(from_pe(&p, data)),
             Object::Mach(mach::Mach::Binary(m)) => Ok(from_macho(&m, data, 0, data.len() as u64)),
             Object::Mach(mach::Mach::Fat(fat)) => {
-                let arches: Vec<_> = fat.iter_arches().filter_map(|a| a.ok()).collect();
+                // The header's slice count is attacker-controlled (a fuzzed file claimed ~2^31):
+                // stop at the first unreadable entry and never look past what 20-byte entries
+                // after the 8-byte header could fit in the file.
+                let fits = data.len().saturating_sub(8) / 20;
+                let arches: Vec<_> = fat
+                    .iter_arches()
+                    .take(fits.min(256))
+                    .map_while(|a| a.ok())
+                    .collect();
                 let mut chosen = None;
                 let mut names = Vec::new();
                 for (i, a) in arches.iter().enumerate() {
@@ -699,7 +707,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         format!("{}", e.header.e_ident[elf::header::EI_OSABI]),
     )];
     if let Some(notes) = e.iter_note_headers(data) {
-        for n in notes.flatten() {
+        for n in notes.take(4096).map_while(|r| r.ok()) {
             if n.n_type == elf::note::NT_GNU_BUILD_ID && n.name == "GNU" {
                 extras.push(("Build ID".into(), hash::hex(n.desc)));
             }
@@ -710,7 +718,9 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
     }
     if let Some(comment) = sections.iter().find(|s| s.name == ".comment") {
         let start = comment.offset as usize;
-        let end = (start + comment.file_size as usize).min(data.len());
+        let end = start
+            .saturating_add(comment.file_size as usize)
+            .min(data.len());
         if let Some(bytes) = data.get(start..end) {
             let compilers: Vec<String> = bytes
                 .split(|&b| b == 0)
@@ -888,7 +898,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
             SectionInfo {
                 entropy: section_entropy(data, s.pointer_to_raw_data as u64, file_size),
                 name,
-                addr: base + s.virtual_address as u64,
+                addr: base.wrapping_add(s.virtual_address as u64),
                 size: s.virtual_size as u64,
                 offset: s.pointer_to_raw_data as u64,
                 file_size,
@@ -907,15 +917,21 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         .map(|i| Import {
             library: Some(i.dll.to_string()),
             name: i.name.to_string(),
-            slot: Some(base + i.offset as u64),
+            slot: Some(base.wrapping_add(i.offset as u64)),
         })
         .collect();
     let exports: Vec<Symbol> = p
         .exports
         .iter()
         .filter_map(|e| {
-            e.name
-                .map(|n| sym(n, base + e.rva as u64, e.size as u64, SymKind::Func))
+            e.name.map(|n| {
+                sym(
+                    n,
+                    base.wrapping_add(e.rva as u64),
+                    e.size as u64,
+                    SymKind::Func,
+                )
+            })
         })
         .collect();
 
@@ -992,7 +1008,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         little_endian: true,
         file_type,
         entry: if p.entry > 0 {
-            base + p.entry as u64
+            base.wrapping_add(p.entry as u64)
         } else {
             0
         },
@@ -1016,7 +1032,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
                 x.functions()
                     .filter_map(|f| f.ok())
                     .filter(|f| f.begin_address != 0)
-                    .map(|f| base + f.begin_address as u64)
+                    .map(|f| base.wrapping_add(f.begin_address as u64))
                     .collect()
             })
             .unwrap_or_default(),
@@ -1169,6 +1185,77 @@ fn macho_arch(cputype: u32) -> Arch {
     }
 }
 
+/// More binds than any real program has; a crafted file asks for billions.
+const MAX_MACHO_BINDS: u64 = 2_000_000;
+
+/// Count the binds the dyld bind opcode streams would perform, without performing them.
+///
+/// goblin's bind interpreter expands `BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB` by pushing one
+/// import per repetition, so a single opcode with a huge count exhausts memory (a fuzzed 16 KB file
+/// did). Streams are finite, so summing the counts is cheap and bounds the real work.
+fn macho_bind_count(m: &mach::MachO, data: &[u8], slice_offset: u64) -> u64 {
+    use mach::load_command::CommandVariant;
+    let Some(info) = m.load_commands.iter().find_map(|lc| match &lc.command {
+        CommandVariant::DyldInfo(c) | CommandVariant::DyldInfoOnly(c) => Some(*c),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    let uleb = |d: &[u8], at: &mut usize| -> u64 {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let Some(&b) = d.get(*at) else { return v };
+            *at += 1;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        v
+    };
+    let mut total = 0u64;
+    for (off, size) in [
+        (info.bind_off, info.bind_size),
+        (info.weak_bind_off, info.weak_bind_size),
+        (info.lazy_bind_off, info.lazy_bind_size),
+    ] {
+        let start = slice_offset.saturating_add(off as u64) as usize;
+        let Some(d) = data.get(start..start.saturating_add(size as usize).min(data.len())) else {
+            continue;
+        };
+        let mut at = 0;
+        while at < d.len() {
+            let op = d[at] & 0xf0;
+            at += 1;
+            match op {
+                0x20 | 0x60 | 0x70 | 0x80 => {
+                    uleb(d, &mut at);
+                }
+                0x40 => {
+                    at += d[at.min(d.len())..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map_or(d.len(), |n| n + 1);
+                }
+                0x90 | 0xb0 => total += 1,
+                0xa0 => {
+                    uleb(d, &mut at);
+                    total += 1;
+                }
+                0xc0 => {
+                    total = total.saturating_add(uleb(d, &mut at));
+                    uleb(d, &mut at);
+                }
+                _ => {}
+            }
+            if total > MAX_MACHO_BINDS {
+                return total;
+            }
+        }
+    }
+    total
+}
+
 /// Exported symbols from the dyld export trie, as (name, offset from the `__TEXT` base).
 ///
 /// goblin's own walker follows child edges without remembering where it has been, so a trie whose
@@ -1294,9 +1381,12 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         }
     }
 
-    let imports: Vec<Import> = m
-        .imports()
-        .unwrap_or_default()
+    let goblin_imports = if macho_bind_count(m, data, slice_offset) <= MAX_MACHO_BINDS {
+        m.imports().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let imports: Vec<Import> = goblin_imports
         .into_iter()
         .map(|i| Import {
             library: Some(i.dylib.to_string()),
@@ -1307,7 +1397,9 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
 
     let mut symbols = Vec::new();
     if let Some(syms) = &m.symbols {
-        for (name, nl) in syms.iter().flatten() {
+        // nsyms comes from the file; stop at the first entry that cannot be read instead of
+        // skipping billions of failing reads (a fuzzed 16 KB file took 25 s).
+        for (name, nl) in syms.iter().take(data.len() / 12).map_while(|r| r.ok()) {
             if nl.is_stab()
                 || nl.is_undefined()
                 || nl.get_type() != mach::symbols::N_SECT
