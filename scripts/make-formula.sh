@@ -6,6 +6,9 @@ set -euo pipefail
 version="${1:?usage: make-formula.sh <vX.Y.Z> <SHA256SUMS>}"
 sums="${2:?usage: make-formula.sh <vX.Y.Z> <SHA256SUMS>}"
 repo="aabhimittal/reverse-engineer"
+# Where the archives live. Defaults to the GitHub release; the release rehearsal points it at
+# file:// so the formula can be installed for real before anything is published.
+base="${REX_FORMULA_BASE_URL:-https://github.com/$repo/releases/download/$version}"
 
 sha() {
   local want="rex-$version-$1.tar.gz" h
@@ -13,7 +16,7 @@ sha() {
   [ -n "$h" ] || { echo "no checksum for $want in $sums" >&2; exit 1; }
   printf '%s' "$h"
 }
-url() { printf 'https://github.com/%s/releases/download/%s/rex-%s-%s.tar.gz' "$repo" "$version" "$version" "$1"; }
+url() { printf '%s/rex-%s-%s.tar.gz' "$base" "$version" "$1"; }
 
 cat <<RUBY
 class Rex < Formula

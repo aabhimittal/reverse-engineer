@@ -358,6 +358,17 @@ mod arm {
     }
 
     #[test]
+    fn aarch64_main_is_inferred_through_a_relocated_got_slot() {
+        // glibc-style PIE _start: `adrp x0, :got:main; ldr x0, [x0, ...]`. The slot holds 0 on
+        // disk; main's address only exists as the addend of an R_AARCH64_RELATIVE relocation.
+        let (b, p) = program("sample_a64_got.stripped.elf");
+        assert!(!b.relocated_ptrs.is_empty());
+        let main = func(&p, "main");
+        assert_eq!(p.main, Some(main.addr));
+        assert_eq!(main.imports_called, vec!["stub_exit", "stub_log"]);
+    }
+
+    #[test]
     fn arm32_functions_and_loops_are_recovered() {
         let (b, p) = program("sample_arm32.elf");
         assert_eq!(b.arch, Arch::Arm);

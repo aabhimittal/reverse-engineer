@@ -30,3 +30,4 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - Large binaries: each artifact is parsed once and shared by every analyzer (`rex analyze` on a 200 MB binary 14 s → 9 s); `rex functions` no longer serializes every instruction (2.7 s → 1.1 s on a Go binary); new `--max-functions` and a finding when the limit cuts recovery short.
 - `scripts/corpus-smoke.sh`: run rex over every file under a directory tree and report crashes, hangs and slow inputs.
 
+- AArch64 `main` inference follows GOT slots filled by RELATIVE relocations (glibc PIE `_start`); release rehearsal installs the Homebrew formula from the built archives.

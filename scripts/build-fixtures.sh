@@ -78,3 +78,12 @@ for spec in "aarch64-linux-gnu:sample_a64.elf:/lib/ld-linux-aarch64.so.1:" \
   ld.lld -pie -dynamic-linker "$interp" --build-id=none -o "$OUT/$out" "$TMP/sample_arm.o" "$TMP/libstub.so"
 done
 llvm-strip -o "$OUT/sample_a64.stripped.elf" "$OUT/sample_a64.elf"
+# glibc-style PIE _start: main comes from a GOT slot that holds 0 on disk and is filled by an
+# R_AARCH64_RELATIVE relocation. --no-relax keeps the GOT load instead of turning it into adrp+add.
+clang --target=aarch64-linux-gnu -DGOT_START -O1 -fPIE -ffreestanding -fno-stack-protector \
+      -fasynchronous-unwind-tables -c "$LABS/05-arm/sample_arm.c" -o "$TMP/sample_arm_got.o"
+clang --target=aarch64-linux-gnu -O1 -fPIC -nostdlib -shared -fuse-ld=lld -Wl,-soname,libstub.so \
+      -Wl,--build-id=none -o "$TMP/libstub.so" "$LABS/05-arm/stub.c"
+ld.lld -pie -z now --no-relax -dynamic-linker /lib/ld-linux-aarch64.so.1 --build-id=none \
+       -o "$TMP/sample_a64_got.elf" "$TMP/sample_arm_got.o" "$TMP/libstub.so"
+llvm-strip -o "$OUT/sample_a64_got.stripped.elf" "$TMP/sample_a64_got.elf"
