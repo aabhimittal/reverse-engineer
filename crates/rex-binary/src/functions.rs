@@ -8,7 +8,7 @@
 //! the wall (data) for a tunnel (code), which is the classic failure of a
 //! naive linear sweep.
 
-use crate::disasm::{Flow, Insn, Names, X86};
+use crate::disasm::{CodeDecoder, Flow, Insn, Names, decoder_for};
 use crate::model::{BinFormat, Binary};
 use crate::strings;
 use rex_core::AnalysisOptions;
@@ -217,13 +217,13 @@ fn stub_section(name: &str) -> bool {
 /// Recover functions, CFGs and the call graph.
 pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
     let mut prog = Program::default();
-    if !bin.arch.is_x86() {
+    let Some(mut x) = decoder_for(bin, &Names::default()) else {
         prog.unsupported_arch = true;
         for s in &bin.symbols {
             prog.names.insert(s.addr, s.display().to_string());
         }
         return prog;
-    }
+    };
 
     // 1. Names from symbols and import slots.
     let mut names: HashMap<u64, String> = HashMap::new();
@@ -240,8 +240,8 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
             .or_insert_with(|| s.display().to_string());
     }
 
-    // 2. Resolve PLT / stub entries: each is `jmp [slot]`, so map stub → import name.
-    let mut x = X86::new(bin.bits, &Names::default());
+    // 2. Resolve PLT / stub entries: each ends in an indirect jump through a slot (`jmp [slot]` on
+    //    x86, `adrp; ldr; br` on AArch64), so map stub → import name.
     let suffix = if bin.format == BinFormat::MachO {
         "@stub"
     } else {
@@ -348,8 +348,47 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
         }
     }
 
+    // 5b. The same inference on AArch64: `_start` builds `main` in x0 (`adrp x0; add x0, x0, #off` (or a single `adr` after linker relaxation),
+    //     or `ldr x0, [x0, #off]` from the GOT in PIE binaries) and calls __libc_start_main.
+    if prog.main.is_none()
+        && bin.arch == crate::model::Arch::AArch64
+        && bin.entry != 0
+        && bin.format == BinFormat::Elf
+    {
+        if let Some(bytes) = bin.bytes_at(data, bin.entry) {
+            let insns = x.linear(&bytes[..bytes.len().min(256)], bin.entry, 64);
+            let mut candidate = None;
+            for i in &insns {
+                if matches!(i.mnemonic.as_str(), "add" | "ldr" | "adr") && i.text.contains(" x0, ")
+                {
+                    candidate = i.data_ref;
+                }
+                let is_libc_start = match i.flow {
+                    Flow::Call(t) => names
+                        .get(&t)
+                        .is_some_and(|n| n.contains("__libc_start_main")),
+                    _ => false,
+                };
+                if is_libc_start {
+                    // PIE: the candidate is a GOT slot holding main; non-PIE: main itself.
+                    let main = candidate.filter(|&c| in_code(c)).or_else(|| {
+                        candidate
+                            .and_then(|c| read_ptr(bin, data, c))
+                            .filter(|&m| in_code(m))
+                    });
+                    if let Some(m) = main {
+                        prog.main = Some(m);
+                        seeds.insert(m);
+                        names.entry(m).or_insert_with(|| "main".into());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     let names_arc = Names(Arc::new(names.clone()));
-    let mut x = X86::new(bin.bits, &names_arc);
+    let mut x = decoder_for(bin, &names_arc).expect("decoder was available above");
 
     // 6. Explore.
     let mut queue: Vec<u64> = seeds.iter().rev().copied().collect();
@@ -365,7 +404,7 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
         let f = explore(
             bin,
             data,
-            &mut x,
+            x.as_mut(),
             start,
             &names,
             &known_starts,
@@ -468,7 +507,7 @@ fn read_ptr(bin: &Binary, data: &[u8], va: u64) -> Option<u64> {
 fn explore(
     bin: &Binary,
     data: &[u8],
-    x: &mut X86,
+    x: &mut dyn CodeDecoder,
     start: u64,
     names: &HashMap<u64, String>,
     known_starts: &HashSet<u64>,
@@ -482,6 +521,7 @@ fn explore(
     let in_code = |a: u64| bin.code_sections().any(|s| s.contains(a));
 
     'outer: while let Some(mut a) = work.pop() {
+        x.reset();
         loop {
             if insns.contains_key(&a) || insns.len() >= max_insns || !in_code(a) {
                 continue 'outer;
@@ -489,13 +529,23 @@ fn explore(
             let Some(bytes) = bin.bytes_at(data, a) else {
                 continue 'outer;
             };
-            let Some(i) = x.decode_one(&bytes[..bytes.len().min(16)], a) else {
+            let Some(i) = x.decode_one(&bytes[..bytes.len().min(x.max_insn_len())], a) else {
                 continue 'outer;
             };
             let next = i.next();
             let flow = i.flow;
             insns.insert(a, i);
+            // Running off the end of a function (it ended in a call to something that never
+            // returns) must not swallow the next function or the PLT stubs behind it.
+            let falls_into_other = |n: u64| known_starts.contains(&n) || stubs.contains_key(&n);
             match flow {
+                Flow::Next if falls_into_other(next) => continue 'outer,
+                Flow::Call(_) | Flow::IndirectCall(_) if falls_into_other(next) => {
+                    if let Flow::Call(t) = flow {
+                        calls.push(t);
+                    }
+                    continue 'outer;
+                }
                 Flow::Next => a = next,
                 Flow::Call(t) => {
                     calls.push(t);

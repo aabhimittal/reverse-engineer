@@ -686,12 +686,12 @@ impl Analyzer for Functions {
         if prog.unsupported_arch {
             let hint = if cfg!(feature = "multiarch") {
                 format!(
-                    "Control-flow recovery is currently x86/x64 only. For {} use `rex disasm <file> --function <name>` (linear Capstone disassembly).",
+                    "Control-flow recovery covers x86/x64, AArch64 and 32-bit ARM (ARM mode). For {} use `rex disasm <file> --addr <hex>` (linear Capstone disassembly).",
                     b.arch.name()
                 )
             } else {
                 format!(
-                    "Control-flow recovery is currently x86/x64 only. {} disassembly needs the `multiarch` feature (`cargo install rex-cli --features multiarch`).",
+                    "Control-flow recovery for {} needs the `multiarch` feature (`cargo install rex-cli --features multiarch`); built-in support is x86/x64.",
                     b.arch.name()
                 )
             };
@@ -1132,16 +1132,64 @@ impl Analyzer for Wasm {
             ));
         }
 
-        // WASI imports are the module's whole reach outside the sandbox.
-        let reach: Vec<String> = m
+        // Who calls what: the WASM analogue of `gets <- main`.
+        let edges = crate::wasm_ops::call_edges(&m, a.data());
+        let callers_of = |idx: u32| -> Vec<String> {
+            let mut v: Vec<String> = edges
+                .iter()
+                .filter(|(_, callee)| *callee == idx)
+                .map(|(caller, _)| m.label(*caller))
+                .collect();
+            v.dedup();
+            v
+        };
+        let func_imports: Vec<(u32, &wasm::Import)> = m
             .imports
             .iter()
-            .filter(|i| i.kind == ExternKind::Func && i.module.starts_with("wasi"))
-            .filter_map(|i| {
+            .filter(|i| i.kind == ExternKind::Func)
+            .enumerate()
+            .map(|(n, i)| (n as u32, i))
+            .collect();
+        let xrefs: Vec<Vec<String>> = func_imports
+            .iter()
+            .map(|(idx, i)| {
+                let c = callers_of(*idx);
+                vec![
+                    format!("{}.{}", i.module, i.name),
+                    if c.is_empty() {
+                        "(not called directly)".into()
+                    } else {
+                        c.join(", ")
+                    },
+                ]
+            })
+            .collect();
+        if !xrefs.is_empty() {
+            out.section(Section::table(
+                "wasm.import_xrefs",
+                "Imports and who calls them",
+                &["import", "called by"],
+                xrefs,
+                opts.max_rows,
+            ));
+        }
+
+        // WASI imports are the module's whole reach outside the sandbox.
+        let reach: Vec<String> = func_imports
+            .iter()
+            .filter(|(_, i)| i.module.starts_with("wasi"))
+            .filter_map(|(idx, i)| {
                 wasm::WASI_REACH
                     .iter()
                     .find(|(n, _)| *n == i.name)
-                    .map(|(n, what)| format!("{n}: {what}"))
+                    .map(|(n, what)| {
+                        let c = callers_of(*idx);
+                        if c.is_empty() {
+                            format!("{n}: {what}")
+                        } else {
+                            format!("{n}: {what} \u{2190} {}", c.join(", "))
+                        }
+                    })
             })
             .collect();
         if !reach.is_empty() {
