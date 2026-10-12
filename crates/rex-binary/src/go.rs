@@ -152,8 +152,11 @@ const MAX_FUNCS: usize = 500_000;
 /// `hint` is the file offset of a `.gopclntab`/`__gopclntab` section when the container names
 /// one; otherwise the file is searched for the table's magic and header.
 pub fn functions(data: &[u8], hint: Option<usize>, little_endian: bool) -> Vec<GoFunc> {
+    // One budget of function entries across every candidate examined, so a file full of
+    // plausible-looking fake headers cannot multiply the work.
+    let mut budget = 2 * MAX_FUNCS;
     if let Some(off) = hint {
-        if let Some(f) = parse_pclntab(data, off, little_endian) {
+        if let Some(f) = parse_pclntab(data, off, little_endian, &mut budget) {
             return f;
         }
     }
@@ -182,16 +185,19 @@ pub fn functions(data: &[u8], hint: Option<usize>, little_endian: bool) -> Vec<G
             if tried > MAX_CANDIDATES {
                 return best;
             }
-            if let Some(f) = parse_pclntab(data, off, little_endian) {
+            if let Some(f) = parse_pclntab(data, off, little_endian, &mut budget) {
                 // The first table that validates is the table; Go binaries carry one.
                 return f;
+            }
+            if budget == 0 {
+                return best;
             }
         }
     }
     best
 }
 
-fn parse_pclntab(data: &[u8], off: usize, le: bool) -> Option<Vec<GoFunc>> {
+fn parse_pclntab(data: &[u8], off: usize, le: bool, budget: &mut usize) -> Option<Vec<GoFunc>> {
     let t = data.get(off..)?;
     let rd32 = |o: usize| -> Option<u32> {
         let b: [u8; 4] = t.get(o..o + 4)?.try_into().ok()?;
@@ -224,7 +230,7 @@ fn parse_pclntab(data: &[u8], off: usize, le: bool) -> Option<Vec<GoFunc>> {
         })
     };
     let nfunc = usize::try_from(word(0)?).ok()?;
-    if nfunc == 0 || nfunc > MAX_FUNCS || nfunc * 8 > t.len() {
+    if nfunc == 0 || nfunc > MAX_FUNCS || nfunc * 8 > t.len() || nfunc > *budget {
         return None;
     }
     let cstr = |base: usize, o: usize| -> Option<String> {
@@ -253,9 +259,16 @@ fn parse_pclntab(data: &[u8], off: usize, le: bool) -> Option<Vec<GoFunc>> {
                 }
                 last = entry;
             }
+            *budget -= nfunc;
+            let mut prev = 0u64;
             for i in 0..nfunc {
                 let e = functab + i * 8;
                 let entry = rd32(e)? as u64;
+                // Entries are sorted by address; the first one out of order means this isn't it.
+                if entry < prev {
+                    return None;
+                }
+                prev = entry;
                 let funcoff = rd32(e + 4)? as usize;
                 // _func: entryOff u32, nameOff i32, …
                 let name_off = rd32(functab.checked_add(funcoff)? + 4)? as usize;
@@ -272,6 +285,7 @@ fn parse_pclntab(data: &[u8], off: usize, le: bool) -> Option<Vec<GoFunc>> {
             // holds (entry pc, func offset) pairs of pointer size.
             let names = usize::try_from(word(2)?).ok()?;
             let functab = usize::try_from(word(6)?).ok()?;
+            *budget -= nfunc;
             for i in 0..nfunc {
                 let e = functab + i * 2 * ptr;
                 let entry = word((e - 8) / ptr).filter(|_| (e - 8) % ptr == 0)?;

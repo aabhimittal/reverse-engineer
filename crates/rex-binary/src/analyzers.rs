@@ -92,6 +92,40 @@ impl Analyzer for Info {
         }
         out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&*b));
 
+        // Go embeds its own bill of materials: main module, every dependency, build flags.
+        if let Some(go) = b.go.as_ref().filter(|g| !g.go_version.is_empty()) {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            if let Some((m, v)) = &go.module {
+                rows.push(vec!["main module".into(), m.clone(), v.clone()]);
+            }
+            for (m, v) in &go.deps {
+                rows.push(vec!["dependency".into(), m.clone(), v.clone()]);
+            }
+            for (k, v) in &go.settings {
+                rows.push(vec!["build setting".into(), k.clone(), v.clone()]);
+            }
+            out.section(
+                Section::table(
+                    "binary.go",
+                    format!("Go build info ({})", go.go_version),
+                    &["kind", "name", "value"],
+                    rows,
+                    opts.max_rows,
+                )
+                .with_data(go),
+            );
+            if let Some((_, v)) = go.settings.iter().find(|(k, _)| k == "vcs.modified") {
+                if v == "true" {
+                    out.finding(Finding::new(
+                        "BIN-GO-DIRTY-BUILD",
+                        Severity::Info,
+                        "provenance",
+                        "Built from a working tree with uncommitted changes (vcs.modified=true)",
+                    ));
+                }
+            }
+        }
+
         let rows = b
             .sections
             .iter()
