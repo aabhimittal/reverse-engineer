@@ -51,6 +51,19 @@ jobs:
       - run: cargo test -p rex-binary --features yara,multiarch
       - run: cargo test -p rex-engine --features multiarch
       - run: cargo build -p rex-cli --no-default-features
+  demo:
+    # Regenerates the demo page from real rex runs; build-demo.py fails if any sample goes blank.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p rex-cli --features multiarch
+      - run: python3 scripts/build-demo.py --out "$RUNNER_TEMP/demo/index.html"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo
+          path: ${{ runner.temp }}/demo/index.html
   docs:
     runs-on: ubuntu-latest
     steps:

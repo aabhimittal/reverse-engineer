@@ -118,7 +118,8 @@ samples = [
         f"{FX}/vuln.elf", "ELF · x86-64",
         views=[
             text_view("main", "disasm", f"{FX}/vuln.elf", "-F", "main"),
-            cfg_view("main CFG", f"{FX}/vuln.elf", "main"),
+            text_view("greet (strcpy overflow)", "disasm", f"{FX}/vuln.elf", "-F", "greet"),
+            text_view("who calls system?", "xrefs", f"{FX}/vuln.elf", "system"),
         ],
         skip_sections=("binary.disasm.root", "binary.cfg.root", "binary.callgraph"),
     ),
@@ -200,11 +201,34 @@ samples.append({
 })
 
 version = run("--version").strip()
+# The page is only worth publishing if every sample still produces something. Fail loudly instead of
+# shipping a demo where a sample quietly went blank after a change in rex.
+EXPECTED = {"crackme", "vuln", "winpe", "asar", "wasm", "arm64", "har", "firmware", "agents"}
+problems = []
+if {s["id"] for s in samples} != EXPECTED:
+    problems.append(f"samples are {sorted(s['id'] for s in samples)}, expected {sorted(EXPECTED)}")
+for s in samples:
+    if not (s["findings"] or s["sections"] or s["views"]):
+        problems.append(f"{s['id']}: no findings, sections or views")
+    for v in s["views"]:
+        if v["type"] == "text" and not v["text"].strip():
+            problems.append(f"{s['id']}: view {v['label']!r} is empty")
+        if v["type"] == "cfg" and (len(v["nodes"]) < 2 or not v["edges"]):
+            problems.append(f"{s['id']}: CFG {v['label']!r} has {len(v['nodes'])} blocks and {len(v['edges'])} edges")
+for sid in ("crackme", "arm64"):
+    if not any(v["type"] == "cfg" for s in samples if s["id"] == sid for v in s["views"]):
+        problems.append(f"{sid}: no CFG view")
+if problems:
+    sys.exit("demo check failed:\n  " + "\n  ".join(problems))
+
 data = {"rex_version": version, "samples": samples}
 with open(os.path.join(ROOT, "docs/demo/template.html"), encoding="utf-8") as f:
     page = f.read()
 blob = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+if "/*__REX_DATA__*/null" not in page:
+    sys.exit("docs/demo/template.html has no /*__REX_DATA__*/null placeholder")
 page = page.replace("/*__REX_DATA__*/null", blob)
+os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 with open(args.out, "w", encoding="utf-8") as f:
     f.write(page)
 print(f"wrote {args.out} ({len(page)//1024} KiB) from {version}; {sum(len(s['findings']) for s in samples)} findings across {len(samples)} samples")
