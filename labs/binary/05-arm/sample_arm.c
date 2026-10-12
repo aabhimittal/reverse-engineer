@@ -37,12 +37,18 @@ int main(int argc, char **argv) {
 }
 
 #if defined(__aarch64__)
-/* Same shape as glibc's _start: main's address goes in x0 for __libc_start_main. */
+/* Same shape as glibc's _start: main's address goes in x0 for __libc_start_main.
+ * GOT_START builds the form glibc's PIE crt1 uses: load main's address from its GOT slot. */
 extern int __libc_start_main(int (*)(int, char **), int, char **);
+#if defined(GOT_START)
+#define LOAD_MAIN "  adrp x0, :got:main\n  ldr x0, [x0, :got_lo12:main]\n"
+#else
+#define LOAD_MAIN "  adrp x0, main\n  add x0, x0, :lo12:main\n"
+#endif
 __asm__(".globl _start\n_start:\n"
         "  mov x29, #0\n  mov x30, #0\n"
         "  ldr x1, [sp]\n  add x2, sp, #8\n"
-        "  adrp x0, main\n  add x0, x0, :lo12:main\n"
+        LOAD_MAIN
         "  bl __libc_start_main\n  brk #0\n");
 #else
 void start_c(long *sp) {

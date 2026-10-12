@@ -122,6 +122,23 @@ jobs:
           rex analyze labs/wasm/sample.wasm
           rex analyze labs/electron/app.asar --fail-on high || test $? -eq 3
           rex setup --dry-run
+      - name: The Homebrew formula installs and passes its test
+        if: runner.os == 'macOS'
+        run: |
+          REX_FORMULA_BASE_URL="file://$PWD/dist" scripts/make-formula.sh "$VERSION" dist/SHA256SUMS > rex.rb
+          cat rex.rb
+          ruby -c rex.rb
+          brew tap-new --no-git rehearsal/rex
+          cp rex.rb "$(brew --repository rehearsal/rex)/Formula/rex.rb"
+          brew install --formula rehearsal/rex/rex
+          brew test rehearsal/rex/rex
+          "$(brew --prefix)/bin/rex" doctor | grep -E "multiarch.*yes"
+      - name: The formula with real release URLs is valid Ruby
+        if: runner.os == 'Linux'
+        run: |
+          scripts/make-formula.sh "$VERSION" dist/SHA256SUMS > rex.rb
+          grep -q "releases/download/$VERSION/rex-$VERSION-aarch64-apple-darwin.tar.gz" rex.rb
+          ruby -c rex.rb
 
   publish:
     name: publish
