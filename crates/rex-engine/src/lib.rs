@@ -11,7 +11,7 @@ use rex_binary::functions::{self, Program};
 use rex_binary::{Binary, carve, diff, strings};
 use rex_core::{
     AnalysisOptions, Artifact, ArtifactKind, ArtifactSummary, Error, Finding, Registry, Report,
-    Result, Section, Severity,
+    Result, Section, SectionBody, Severity,
 };
 use std::path::Path;
 use std::time::Instant;
@@ -1061,6 +1061,184 @@ pub fn analyzers_report() -> Report {
         0,
     ));
     rep
+}
+
+/// Compare two saved `rex analyze -f json` reports: findings that appeared, disappeared or
+/// changed severity, and rows added to or removed from every table (imports, capabilities,
+/// endpoints, dependencies, …). Addresses are ignored when matching rows, so a rebuild that only
+/// moved code does not show up as a change. New and escalated findings are repeated as findings
+/// of this report, so `rex compare old.json new.json --fail-on high` gates CI on regressions.
+pub fn compare_reports(old_json: &str, new_json: &str) -> Result<Report> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let start = Instant::now();
+    let load = |s: &str, which: &str| -> Result<Report> {
+        let v: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| Error::parse("report", format!("{which}: {e}")))?;
+        // `rex analyze -f json` writes a list (one report per input); take the first.
+        let first = match v {
+            serde_json::Value::Array(mut a) if !a.is_empty() => a.swap_remove(0),
+            o @ serde_json::Value::Object(_) => o,
+            _ => {
+                return Err(Error::parse(
+                    "report",
+                    format!("{which}: not a rex JSON report"),
+                ));
+            }
+        };
+        serde_json::from_value(first).map_err(|e| Error::parse("report", format!("{which}: {e}")))
+    };
+    let (old, new) = (load(old_json, "old")?, load(new_json, "new")?);
+
+    let mut rep = Report::new(
+        format!("rex compare: {} → {}", old.artifact.name, new.artifact.name),
+        new.artifact.clone(),
+    );
+    let sev = |r: &Report| -> BTreeMap<String, (Severity, String)> {
+        r.findings
+            .iter()
+            .map(|f| {
+                (
+                    format!("{}\u{1}{}", f.id, f.title),
+                    (f.severity, f.title.clone()),
+                )
+            })
+            .collect()
+    };
+    let (fo, fnw) = (sev(&old), sev(&new));
+    let mut rows = Vec::new();
+    for (k, (s, title)) in &fnw {
+        let id = k.split('\u{1}').next().unwrap_or_default().to_string();
+        match fo.get(k) {
+            None => {
+                rows.push(vec![
+                    "added".into(),
+                    s.as_str().into(),
+                    id.clone(),
+                    title.clone(),
+                ]);
+                rep.findings.push(Finding::new(
+                    format!("COMPARE-NEW-{id}"),
+                    *s,
+                    "regression",
+                    format!("New: {title}"),
+                ));
+            }
+            Some((os, _)) if os != s => {
+                rows.push(vec![
+                    format!("{} → {}", os.as_str(), s.as_str()),
+                    s.as_str().into(),
+                    id.clone(),
+                    title.clone(),
+                ]);
+                if s > os {
+                    rep.findings.push(Finding::new(
+                        format!("COMPARE-ESCALATED-{id}"),
+                        *s,
+                        "regression",
+                        format!("Now {}: {title}", s.as_str()),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    for (k, (s, title)) in &fo {
+        if !fnw.contains_key(k) {
+            let id = k.split('\u{1}').next().unwrap_or_default().to_string();
+            rows.push(vec!["removed".into(), s.as_str().into(), id, title.clone()]);
+        }
+    }
+    let same_input = old.artifact.sha256.is_some() && old.artifact.sha256 == new.artifact.sha256;
+    rep.push(Section::kv(
+        "compare.summary",
+        "Summary",
+        [
+            (
+                "Old".to_string(),
+                format!("{} ({})", old.artifact.name, crate::short_hash(&old)),
+            ),
+            (
+                "New".to_string(),
+                format!("{} ({})", new.artifact.name, crate::short_hash(&new)),
+            ),
+            ("Identical input".to_string(), same_input.to_string()),
+            (
+                "Findings".to_string(),
+                format!("{} → {}", old.findings.len(), new.findings.len()),
+            ),
+            ("Finding changes".to_string(), rows.len().to_string()),
+        ],
+    ));
+    rep.push(Section::table(
+        "compare.findings",
+        "Findings that changed",
+        &["change", "severity", "id", "title"],
+        rows,
+        0,
+    ));
+
+    // Tables: set difference of rows, keyed on their non-address cells.
+    let is_addr = |c: &str| c.starts_with("0x") && c[2..].chars().all(|d| d.is_ascii_hexdigit());
+    let key = |row: &[String]| -> String {
+        row.iter()
+            .filter(|c| !is_addr(c))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let tables = |r: &Report| -> BTreeMap<String, (String, BTreeSet<String>)> {
+        r.sections
+            .iter()
+            .filter_map(|s| match &s.body {
+                SectionBody::Table { rows, .. } => Some((
+                    s.id.clone(),
+                    (s.title.clone(), rows.iter().map(|r| key(r)).collect()),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    let (to, tn) = (tables(&old), tables(&new));
+    let ids: BTreeSet<&String> = to.keys().chain(tn.keys()).collect();
+    let empty = BTreeSet::new();
+    for id in ids {
+        let o = to.get(id).map(|t| &t.1).unwrap_or(&empty);
+        let n = tn.get(id).map(|t| &t.1).unwrap_or(&empty);
+        let title = tn
+            .get(id)
+            .or_else(|| to.get(id))
+            .map(|t| t.0.clone())
+            .unwrap_or_default();
+        let mut rows: Vec<Vec<String>> = n
+            .difference(o)
+            .map(|r| vec!["+".into(), r.clone()])
+            .collect();
+        rows.extend(o.difference(n).map(|r| vec!["-".into(), r.clone()]));
+        if !rows.is_empty() {
+            rep.push(Section::table(
+                format!("compare.{id}"),
+                format!(
+                    "{title}: {} added, {} removed",
+                    n.difference(o).count(),
+                    o.difference(n).count()
+                ),
+                &["", "row"],
+                rows,
+                200,
+            ));
+        }
+    }
+    rep.findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
+fn short_hash(r: &Report) -> String {
+    r.artifact
+        .sha256
+        .as_deref()
+        .map(|h| h.chars().take(12).collect())
+        .unwrap_or_else(|| "no hash".into())
 }
 
 #[cfg(test)]

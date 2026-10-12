@@ -23,6 +23,8 @@ Commands:
   xrefs        Cross-references for a function, import or string
   carve        Find (and optionally extract) embedded files and filesystems
   diff         Function-level diff of two binaries (patch analysis)
+  compare      Compare two saved `rex analyze -f json` reports (what changed between builds or
+               runs). With --fail-on, new or escalated findings fail the run
   web          Web & API reverse engineering
   apk          Analyse an Android APK (shortcut for `analyze`)
   code         Codebase archaeology
