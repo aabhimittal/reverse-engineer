@@ -491,6 +491,9 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
 
 /// Read a pointer-sized little/big-endian value at a virtual address.
 fn read_ptr(bin: &Binary, data: &[u8], va: u64) -> Option<u64> {
+    if let Ok(i) = bin.relocated_ptrs.binary_search_by_key(&va, |p| p.0) {
+        return Some(bin.relocated_ptrs[i].1);
+    }
     let width = (bin.bits / 8) as usize;
     let b = bin.bytes_at(data, va)?.get(..width)?;
     let mut buf = [0u8; 8];

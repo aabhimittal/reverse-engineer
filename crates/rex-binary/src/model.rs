@@ -255,6 +255,11 @@ pub struct Binary {
     /// Function start addresses from unwind / metadata tables
     /// (PE `.pdata`, Mach-O `LC_FUNCTION_STARTS`).
     pub function_starts: Vec<u64>,
+    /// Pointer slots whose on-disk value is not the value at run time, sorted by slot address.
+    /// In ELF RELA binaries a slot covered by a RELATIVE relocation holds 0 on disk and the
+    /// pointer lives in the relocation addend (e.g. the GOT slot glibc's PIE `_start` loads
+    /// `main` from).
+    pub relocated_ptrs: Vec<(u64, u64)>,
 }
 
 impl Binary {
@@ -468,6 +473,31 @@ fn elf_arch(machine: u16, bits64: bool) -> Arch {
         EM_RISCV => Arch::RiscV,
         m => Arch::Other(format!("{} ({m})", elf::header::machine_to_str(m))),
     }
+}
+
+/// RELATIVE relocations with an explicit addend: slot address -> pointer value at load time
+/// (relative to a zero load base, which is how the rest of the model addresses things).
+fn elf_relative_relocs(e: &elf::Elf) -> Vec<(u64, u64)> {
+    use goblin::elf::reloc::*;
+    let relative = match e.header.e_machine {
+        elf::header::EM_X86_64 => R_X86_64_RELATIVE,
+        elf::header::EM_386 => R_386_RELATIVE,
+        elf::header::EM_AARCH64 => R_AARCH64_RELATIVE,
+        elf::header::EM_ARM => R_ARM_RELATIVE,
+        elf::header::EM_RISCV => R_RISCV_RELATIVE,
+        elf::header::EM_PPC64 => R_PPC64_RELATIVE,
+        elf::header::EM_PPC => R_PPC_RELATIVE,
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<(u64, u64)> = e
+        .dynrelas
+        .iter()
+        .filter(|r| r.r_type == relative && r.r_sym == 0)
+        .filter_map(|r| Some((r.r_offset, u64::try_from(r.r_addend?).ok()?)))
+        .collect();
+    out.sort_unstable();
+    out.dedup_by_key(|p| p.0);
+    out
 }
 
 fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
@@ -691,6 +721,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         overlay_offset,
         slice_size: data.len() as u64,
         function_starts: Vec::new(),
+        relocated_ptrs: elf_relative_relocs(e),
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
@@ -941,6 +972,8 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
                     .collect()
             })
             .unwrap_or_default(),
+        // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
+        relocated_ptrs: Vec::new(),
     };
     b.mitigations = crate::checksec::pe(p, &b);
     b
@@ -1301,6 +1334,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         overlay_offset: None,
         slice_size,
         function_starts: macho_function_starts(m, data),
+        relocated_ptrs: Vec::new(),
     };
     b.mitigations = crate::checksec::macho(m, &b, data);
     b
