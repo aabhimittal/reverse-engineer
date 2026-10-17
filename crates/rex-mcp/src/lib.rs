@@ -87,6 +87,12 @@ pub fn tools() -> Vec<Value> {
             &["old", "new"],
         ),
         tool(
+            "rex_core",
+            "Crash triage of a Linux ELF core dump: signal and si_code, fault address, crashing thread's pc/sp as module+offset, all threads, mapped files, and code pointers found on the stack.",
+            json!({"path": path}),
+            &["path"],
+        ),
+        tool(
             "rex_carve",
             "Scan a firmware image / blob for embedded files and filesystems (gzip, squashfs, cpio, uImage, ELF, PEM, …) with entropy profile.",
             json!({"path": path}),
@@ -319,6 +325,9 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
             &rex_engine::diff_report(&load("old")?, &load("new")?, &opts)
                 .map_err(|e| e.to_string())?,
         ),
+        "rex_core" => {
+            md(&rex_engine::core_report(&load("path")?, &opts).map_err(|e| e.to_string())?)
+        }
         "rex_carve" => {
             md(&rex_engine::carve_report(&load("path")?, None).map_err(|e| e.to_string())?)
         }
@@ -378,7 +387,7 @@ pub fn handle(msg: &Value) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
                 "serverInfo": { "name": "rex", "title": "rex reverse-engineering toolkit", "version": rex_engine::rex_core::VERSION },
-                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs (binaries), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
+                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs (binaries), rex_core (crash dumps), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
             }))
         }
         "ping" => Ok(json!({})),

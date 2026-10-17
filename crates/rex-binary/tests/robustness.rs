@@ -1,7 +1,7 @@
 //! Seeded mutation testing for the native parsers, disassembler and carver.
 
 use rex_binary::{Binary, carve, functions, packer, strings};
-use rex_core::AnalysisOptions;
+use rex_core::{AnalysisOptions, Analyzer, Artifact};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -15,10 +15,17 @@ fn fixture(name: &str) -> Vec<u8> {
 
 #[test]
 fn mutated_binaries_never_panic() {
-    let seeds: Vec<Vec<u8>> = ["crackme.elf", "vuln.elf", "sample.exe", "hello.macho"]
-        .iter()
-        .map(|n| fixture(n))
-        .collect();
+    let seeds: Vec<Vec<u8>> = [
+        "crackme.elf",
+        "vuln.elf",
+        "sample.exe",
+        "hello.macho",
+        "core_x64.elf",
+        "core_a64.elf",
+    ]
+    .iter()
+    .map(|n| fixture(n))
+    .collect();
     let opts = AnalysisOptions {
         max_functions: 100,
         max_insns_per_function: 1000,
@@ -48,6 +55,10 @@ fn mutated_binaries_never_panic() {
         if let Ok(b) = Binary::parse(&d) {
             let _ = functions::analyze(&b, &d, &opts);
             let _ = packer::detect(&b, &d);
+            if b.core.is_some() {
+                let a = Artifact::from_bytes("core", d.clone());
+                let _ = rex_binary::analyzers::Core.analyze(&a, &opts);
+            }
         }
         let _ = carve::scan(&d, round % 2 == 0);
         let _ = strings::extract(&d, 4);

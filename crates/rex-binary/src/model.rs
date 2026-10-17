@@ -266,6 +266,9 @@ pub struct Binary {
     /// .NET metadata, for managed (CLI) assemblies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dotnet: Option<crate::dotnet::DotNet>,
+    /// Crash context, for ELF core dumps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub core: Option<crate::core::CoreInfo>,
 }
 
 impl Binary {
@@ -289,7 +292,10 @@ impl Binary {
     pub fn parse(data: &[u8]) -> Result<Self> {
         std::panic::catch_unwind(|| {
             let mut b = Self::parse_inner(data)?;
-            enrich_go(&mut b, data);
+            // A core holds a process's memory, Go build info included; it is not a Go binary.
+            if b.core.is_none() {
+                enrich_go(&mut b, data);
+            }
             Ok(b)
         })
         .unwrap_or_else(|_| Err(Error::parse("binary", "malformed input (parser panicked)")))
@@ -791,7 +797,13 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         relocated_ptrs: elf_relative_relocs(e),
         go: None,
         dotnet: None,
+        core: None,
     };
+    if e.header.e_type == elf::header::ET_CORE {
+        // A memory dump: no code to recover and no mitigations to judge.
+        b.core = Some(crate::core::parse(e, data));
+        return b;
+    }
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
     b
@@ -1045,6 +1057,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         relocated_ptrs: Vec::new(),
         go: None,
         dotnet: None,
+        core: None,
     };
     b.mitigations = crate::checksec::pe(p, &b);
     pe_dotnet(p, &mut b, data);
@@ -1510,6 +1523,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         relocated_ptrs: Vec::new(),
         go: None,
         dotnet: None,
+        core: None,
     };
     b.mitigations = crate::checksec::macho(m, &b, data);
     b

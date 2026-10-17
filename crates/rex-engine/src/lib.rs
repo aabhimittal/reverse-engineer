@@ -53,6 +53,17 @@ fn native(a: &Artifact) -> Result<Binary> {
     Ok(Binary::of(a)?.as_ref().clone())
 }
 
+/// A native binary with code to analyse: cores hold a crashed process's memory, not a program.
+fn native_code(a: &Artifact) -> Result<Binary> {
+    let b = native(a)?;
+    if b.core.is_some() {
+        return Err(Error::Unsupported(
+            "core dump: use `rex core` or `rex analyze`".into(),
+        ));
+    }
+    Ok(b)
+}
+
 fn new_report(title: String, a: &Artifact) -> Report {
     Report::new(title, ArtifactSummary::of(a))
 }
@@ -77,7 +88,7 @@ pub fn function_listing(p: &Program, f: &functions::Function) -> String {
 
 /// Recover the program (functions, CFGs) for a native binary.
 pub fn program(a: &Artifact, opts: &AnalysisOptions) -> Result<(Binary, Program)> {
-    let b = native(a)?;
+    let b = native_code(a)?;
     let p = functions::analyze(&b, a.data(), opts);
     Ok((b, p))
 }
@@ -91,7 +102,7 @@ pub fn checksec_many(arts: &[Artifact]) -> Report {
     let mut errors = Vec::new();
     let mut findings = Vec::new();
     for a in arts {
-        match native(a) {
+        match native_code(a) {
             Ok(b) => {
                 let fmt = b.format.as_str().to_string();
                 let idx = match groups.iter().position(|g| g.0 == fmt) {
@@ -163,6 +174,19 @@ pub fn checksec_many(arts: &[Artifact]) -> Report {
     rep.sort_findings();
     rep.duration_ms = start.elapsed().as_millis() as u64;
     rep
+}
+
+/// Crash triage of an ELF core dump (the `binary.core` analyzer on its own).
+pub fn core_report(a: &Artifact, opts: &AnalysisOptions) -> Result<Report> {
+    if native(a)?.core.is_none() {
+        return Err(Error::Unsupported(format!(
+            "{} is not a core dump (ELF ET_CORE)",
+            a.name()
+        )));
+    }
+    let mut rep = analyze(a, opts, &["binary.core".into()]);
+    rep.title = format!("rex core: {}", a.name());
+    Ok(rep)
 }
 
 /// Strings with optional category filter.

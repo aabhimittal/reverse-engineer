@@ -166,6 +166,8 @@ enum Cmd {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
+    /// Crash triage of a Linux core dump: signal, fault address, threads, mappings.
+    Core { path: PathBuf },
     /// Extract and classify strings.
     Strings {
         path: PathBuf,
@@ -485,6 +487,10 @@ fn run(cli: Cli) -> Result<i32> {
                 .map(|p| ctx.load(p))
                 .collect::<Result<Vec<_>>>()?;
             ctx.emit(&[rex_engine::checksec_many(&arts)])
+        }
+        Cmd::Core { path } => {
+            let a = ctx.load(&path)?;
+            ctx.emit(&[rex_engine::core_report(&a, o)?])
         }
         Cmd::Strings {
             path,

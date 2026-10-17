@@ -19,7 +19,7 @@ builds from source instead.
 
 **How is this different from Ghidra, IDA, radare2 or binwalk?**
 Those are deeper. rex is the triage layer in front of them. It answers *what is this, what can it do, what is
-risky, where do I look* across binaries, firmware, APKs, WebAssembly, Electron apps, HAR captures and source trees,
+risky, where do I look* across binaries, firmware, core dumps, APKs, WebAssembly, Electron apps, HAR captures and source trees,
 in seconds, with output a machine can consume. When it points you at a function, you open Ghidra on that
 function. It is not a decompiler and not a debugger.
 

@@ -16,6 +16,7 @@
 - [x86-64 assembly for reversers](binary/x86-64.md)
 - [Static analysis: functions, CFGs, xrefs](binary/static-analysis.md)
 - [Dynamic analysis](binary/dynamic-analysis.md)
+- [Crash triage: core dumps](binary/crash-triage.md)
 - [Exploit mitigations (checksec)](binary/mitigations.md)
 - [Packers and obfuscation](binary/packers.md)
 - [Malware triage, capabilities and YARA](binary/malware-triage.md)

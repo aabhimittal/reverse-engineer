@@ -198,7 +198,7 @@ fn macho_entry_stubs_and_strings() {
 
 #[test]
 fn truncated_inputs_never_panic() {
-    for name in ["crackme.elf", "sample.exe", "hello.macho"] {
+    for name in ["crackme.elf", "sample.exe", "hello.macho", "core_x64.elf"] {
         let data = fixture(name);
         let mut cut = 0;
         while cut < data.len() {
@@ -447,4 +447,91 @@ fn pe_version_info_and_manifest_elevation() {
         ids.contains(&"BIN-PE-MANIFEST-ELEVATION") && ids.contains(&"BIN-PE-MANIFEST-UIACCESS"),
         "{ids:?}"
     );
+}
+
+#[test]
+fn core_dump_triage() {
+    for (name, arch, pc_reg) in [
+        ("core_x64.elf", Arch::X86_64, "rip"),
+        ("core_a64.elf", Arch::AArch64, "pc"),
+    ] {
+        let b = Binary::parse(&fixture(name)).unwrap();
+        assert_eq!(b.arch, arch);
+        assert_eq!(b.file_type, "core dump");
+        assert!(b.mitigations.is_empty(), "{name}: no checksec on a core");
+        let c = b.core.as_ref().expect("core info");
+        assert_eq!((c.signal, c.signal_name.as_str()), (11, "SIGSEGV"));
+        assert_eq!(c.si_code, Some(1));
+        assert_eq!(c.fault_addr, Some(0x10));
+        assert_eq!(c.pid, Some(4242));
+        assert_eq!(c.threads.len(), 2);
+        let t = c.crashing_thread().unwrap();
+        assert_eq!(
+            (t.tid, t.pc, t.sp),
+            (4242, Some(0x5555_5555_5139), Some(0x7fff_ffff_e800))
+        );
+        assert!(
+            t.regs
+                .iter()
+                .any(|&(n, v)| n == pc_reg && v == 0x5555_5555_5139)
+        );
+        assert_eq!(
+            c.symbolize(0x5555_5555_5139).as_deref(),
+            Some("crashme+0x1139")
+        );
+        assert_eq!(c.mappings.len(), 4);
+        assert_eq!(c.auxv.execfn.as_deref(), Some("/usr/bin/crashme"));
+        assert_eq!(c.command.as_deref(), Some("crashme"));
+
+        let r = report(name);
+        assert!(r.errors.is_empty(), "{name}: {:?}", r.errors);
+        let ids: Vec<&str> = r.findings.iter().map(|f| f.id.as_str()).collect();
+        assert!(
+            ids.contains(&"BIN-CORE-CRASH") && ids.contains(&"BIN-CORE-NULL-DEREF"),
+            "{ids:?}"
+        );
+        let crash = r
+            .findings
+            .iter()
+            .find(|f| f.id == "BIN-CORE-CRASH")
+            .unwrap();
+        assert_eq!(crash.severity, Severity::Medium);
+        assert!(crash.evidence.iter().any(|e| e.contains("crashme+0x1139")));
+        let stack = serde_json::to_string(r.section("binary.core.stack").unwrap()).unwrap();
+        assert!(
+            stack.contains("crashme+0x11a4") && stack.contains("libc.so.6+0x51d90"),
+            "{stack}"
+        );
+        for absent in [
+            "binary.checksec",
+            "binary.functions",
+            "binary.packer",
+            "binary.capabilities",
+        ] {
+            assert!(
+                r.section(absent).is_none(),
+                "{name}: {absent} ran on a core"
+            );
+        }
+        assert!(r.section("binary.strings").is_some(), "strings still run");
+    }
+
+    // A pc outside every executable mapping (here: on the stack) is a possible hijack.
+    let mut d = fixture("core_x64.elf");
+    let pc = 0x5555_5555_5139u64.to_le_bytes();
+    let i = d.windows(8).position(|w| w == pc).unwrap();
+    d[i..i + 8].copy_from_slice(&0x7fff_ffff_e800u64.to_le_bytes());
+    let mut r = Registry::new();
+    rex_binary::register(&mut r);
+    let rep = r.run(
+        &Artifact::from_bytes("hijack", d),
+        &AnalysisOptions::default(),
+        &[],
+    );
+    let crash = rep
+        .findings
+        .iter()
+        .find(|f| f.id == "BIN-CORE-CRASH")
+        .unwrap();
+    assert_eq!(crash.severity, Severity::High);
 }

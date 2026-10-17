@@ -15,6 +15,7 @@ Commands:
                source trees) [alias: a]
   info         Headers, sections, imports and exports of a binary
   checksec     Exploit-mitigation table for one or more binaries
+  core         Crash triage of a Linux core dump: signal, fault address, threads, mappings
   strings      Extract and classify strings
   functions    List recovered functions
   disasm       Disassemble a function or address range
@@ -182,6 +183,35 @@ Options:
   -f, --format <FORMAT>                Output format (default: text, or inferred from --output
                                        extension) [possible values: text, json, md, sarif, html]
   -x, --extract <DIR>                  Extract into this directory
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
+```
+
+## rex core
+
+```text
+Crash triage of a Linux core dump: signal, fault address, threads, mappings
+
+Usage: rex core [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  
+
+Options:
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
   -o, --output <FILE>                  Write output to a file instead of stdout
       --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
                                        auto, always, never]

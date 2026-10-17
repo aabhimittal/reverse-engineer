@@ -136,6 +136,39 @@ fn binary_subcommands() {
 }
 
 #[test]
+fn core_dump_triage() {
+    let s = stdout(rex().arg("core").arg(fx("core_x64.elf")));
+    assert!(s.contains("SIGSEGV") && s.contains("SEGV_MAPERR"), "{s}");
+    assert!(
+        s.contains("crashme+0x1139") && s.contains("BIN-CORE-NULL-DEREF"),
+        "{s}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(
+        rex().args(["core", "-f", "json"]).arg(fx("core_a64.elf")),
+    ))
+    .unwrap();
+    assert_eq!(v[0]["sections"][0]["id"], "binary.core");
+    assert_eq!(v[0]["sections"][0]["data"]["fault_addr"], 0x10);
+    assert!(
+        v[0]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "BIN-CORE-CRASH")
+    );
+    // Code-level verbs refuse a core instead of analysing memory as a program.
+    let out = rex()
+        .arg("functions")
+        .arg(fx("core_x64.elf"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rex core"));
+    let out = rex().arg("core").arg(fx("vuln.elf")).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
 fn web_and_code_subcommands() {
     let d = tempfile::tempdir().unwrap();
     let spec = d.path().join("api.yaml");

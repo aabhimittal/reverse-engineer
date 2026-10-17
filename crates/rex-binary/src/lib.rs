@@ -13,6 +13,7 @@
 //! | [`fingerprint`] | How do I find its relatives? (imphash, TLSH) |
 //! | [`carve`] | What's embedded inside? (filesystems, archives, keys) |
 //! | [`diff`] | What changed between two versions? |
+//! | [`core`](crate::core) | Why did it crash? (signal, fault address, threads, mappings of an ELF core dump) |
 //!
 //! Nothing here executes the input. All analysis is static.
 #![forbid(unsafe_code)]
@@ -23,6 +24,7 @@ pub mod arm;
 pub mod capabilities;
 pub mod carve;
 mod checksec;
+pub mod core;
 pub mod diff;
 pub mod disasm;
 pub mod dotnet;

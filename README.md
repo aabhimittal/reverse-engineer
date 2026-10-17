@@ -29,7 +29,7 @@ what's risky about it, and where to look next*, then hands you off to Ghidra, a 
 
 | Domain | Capabilities |
 |---|---|
-| **Native binaries** (ELF, PE, Mach-O, incl. fat) | Unified model of sections/imports/exports/symbols; **checksec** (NX, PIE/ASLR, RELRO, canary, FORTIFY, CFG, CET/BTI, signing, hardened runtime); classified strings (URLs, IPs, registry keys, secrets, commands); **50+ capability rules mapped to MITRE ATT&CK**; packer heuristics; imphash + TLSH; optional YARA-X. **Go**: version, modules, dependencies and build settings, plus every function name from the pclntab even in stripped builds (all Go targets). **.NET**: CLI metadata (assembly, references, types, P/Invoke imports fed to the capability rules). **PE** version info and manifest elevation/uiAccess |
+| **Native binaries** (ELF, PE, Mach-O, incl. fat) | Unified model of sections/imports/exports/symbols; **checksec** (NX, PIE/ASLR, RELRO, canary, FORTIFY, CFG, CET/BTI, signing, hardened runtime); classified strings (URLs, IPs, registry keys, secrets, commands); **50+ capability rules mapped to MITRE ATT&CK**; packer heuristics; imphash + TLSH; optional YARA-X. **Go**: version, modules, dependencies and build settings, plus every function name from the pclntab even in stripped builds (all Go targets). **.NET**: CLI metadata (assembly, references, types, P/Invoke imports fed to the capability rules). **PE** version info and manifest elevation/uiAccess. **Linux core dumps** (`rex core`): signal and `si_code`, fault address, per-thread registers, mapped files, the crashing pc as `module+offset` and code pointers on the stack |
 | **Code recovery** (x86/x64 built in; **AArch64 and 32-bit ARM** via `--features multiarch`, linear disassembly for MIPS, PowerPC, RISC-V) | Recursive-descent function discovery seeded from symbols, `.eh_frame`, `.pdata`, `LC_FUNCTION_STARTS`; PLT/IAT/stub resolution; `main` inference in stripped binaries; basic blocks, CFGs (Mermaid/DOT), call graph, cross-references, cyclomatic complexity |
 | **Firmware & blobs** | binwalk-style carving with per-format validators and exact sizing, entropy profile, extraction (gzip/uImage unwrapping), embedded credential and key checks |
 | **Patch analysis** | Function-level binary diff: matches by name, instruction hash, then trigram similarity; flags small surgical changes. `rex compare old.json new.json` diffs two saved reports (findings, imports, capabilities, mitigations…) and `--fail-on` turns regressions into a failing CI step |
@@ -119,7 +119,7 @@ foundations and ethics, executable formats, x86-64 for reversers, static and dyn
 malware triage and YARA, patch diffing, traffic to API spec, JS bundles, codebase archaeology, AI-assisted RE.
 
 [`labs/`](labs) contains benign, reproducible practice material: a crackme, an intentionally vulnerable binary, a
-Windows PE, a Mach-O, a firmware image, a HAR capture, a JS bundle with a source map, an Android APK, a WebAssembly
+Windows PE, a Mach-O, a firmware image, two crash core dumps, a HAR capture, a JS bundle with a source map, an Android APK, a WebAssembly
 module and a deliberately insecure Electron app. See the [showcase](docs/src/showcase.md) for real transcripts. All are built
 from sources or generator scripts in the repo.
 
