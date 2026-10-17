@@ -497,7 +497,12 @@ fn enrich_go(b: &mut Binary, data: &[u8]) {
     if info.is_none() && hint.is_none() {
         return;
     }
-    let funcs = crate::go::functions(data, hint, b.little_endian);
+    let text = b
+        .sections
+        .iter()
+        .find(|s| s.name == ".text" || s.name.ends_with("__text"))
+        .map(|s| s.addr);
+    let funcs = crate::go::functions(data, hint, b.little_endian, text);
     if info.is_none() && funcs.is_empty() {
         return;
     }
