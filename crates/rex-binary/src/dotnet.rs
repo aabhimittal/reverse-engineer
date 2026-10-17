@@ -164,8 +164,9 @@ impl Tables<'_> {
         let w = &self.widths[t];
         let off = self.start[t]
             .checked_add((row as usize - 1).checked_mul(self.row_size[t])?)?
-            .checked_add(w[..col].iter().sum::<usize>())?;
-        match w[col] {
+            .checked_add(w.get(..col)?.iter().sum::<usize>())?;
+        // A table can be marked present yet have no known schema (empty widths).
+        match *w.get(col)? {
             2 => u16_at(self.data, off).map(u32::from),
             _ => u32_at(self.data, off),
         }
