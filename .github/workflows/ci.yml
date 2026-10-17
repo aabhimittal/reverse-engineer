@@ -58,6 +58,41 @@ jobs:
       - run: cargo test -p rex-binary --features yara,multiarch
       - run: cargo test -p rex-engine --features multiarch
       - run: cargo build -p rex-cli --no-default-features
+  ghidra:
+    name: ghidra bridge (real Ghidra)
+    runs-on: ubuntu-latest
+    env:
+      GHIDRA_TAG: Ghidra_12.1.4_build
+      REX_REQUIRE_GHIDRA: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@v4
+        id: ghidra-cache
+        with:
+          path: ${{ runner.temp }}/ghidra
+          key: ghidra-${{ env.GHIDRA_TAG }}
+      - name: Download the pinned Ghidra release (checked against GitHub's sha256 digest)
+        if: steps.ghidra-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset=$(gh api "repos/NationalSecurityAgency/ghidra/releases/tags/$GHIDRA_TAG" \
+            --jq '.assets[] | select(.name | endswith(".zip")) | "\(.name) \(.digest)"' | head -1)
+          name=${asset% *}; digest=${asset#* }
+          test "${digest%%:*}" = sha256
+          gh release download "$GHIDRA_TAG" -R NationalSecurityAgency/ghidra -p "$name" -D "$RUNNER_TEMP"
+          echo "${digest#sha256:}  $RUNNER_TEMP/$name" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/$name" -d "$RUNNER_TEMP/ghidra"
+      - name: Point rex at Ghidra
+        run: echo "GHIDRA_INSTALL_DIR=$(ls -d "$RUNNER_TEMP"/ghidra/ghidra_*)" >> "$GITHUB_ENV"
+      - run: cargo test -p rex-cli --test ghidra -- --nocapture
   demo:
     # Regenerates the demo page from real rex runs; build-demo.py fails if any sample goes blank.
     runs-on: ubuntu-latest

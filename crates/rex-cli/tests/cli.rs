@@ -105,6 +105,21 @@ fn binary_subcommands() {
     assert!(stdout(rex().arg("callgraph").arg(fx("crackme.stripped.elf"))).contains("flowchart"));
     assert!(stdout(rex().arg("xrefs").arg(fx("vuln.elf")).arg("gets")).contains("main"));
     assert!(stdout(rex().arg("functions").arg(fx("hello.macho"))).contains("_verify"));
+    let got = stdout(rex().arg("relocs").arg(fx("crackme.elf")).arg("--got"));
+    assert!(
+        got.contains("R_X86_64_JUMP_SLOT") && got.contains("puts@plt") && got.contains("read-only"),
+        "{got}"
+    );
+    let json = stdout(
+        rex()
+            .arg("relocs")
+            .arg(fx("crackme.relr.elf"))
+            .args(["-f", "json"]),
+    );
+    assert!(
+        json.contains("\"table\": \"relr\"") || json.contains("\"table\":\"relr\""),
+        "{json}"
+    );
     assert!(
         stdout(
             rex()
@@ -133,6 +148,39 @@ fn binary_subcommands() {
         .contains("Identical")
     );
     assert!(stdout(rex().arg("info").arg(fx("sample.exe"))).contains("imphash"));
+}
+
+#[test]
+fn core_dump_triage() {
+    let s = stdout(rex().arg("core").arg(fx("core_x64.elf")));
+    assert!(s.contains("SIGSEGV") && s.contains("SEGV_MAPERR"), "{s}");
+    assert!(
+        s.contains("crashme+0x1139") && s.contains("BIN-CORE-NULL-DEREF"),
+        "{s}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout(
+        rex().args(["core", "-f", "json"]).arg(fx("core_a64.elf")),
+    ))
+    .unwrap();
+    assert_eq!(v[0]["sections"][0]["id"], "binary.core");
+    assert_eq!(v[0]["sections"][0]["data"]["fault_addr"], 0x10);
+    assert!(
+        v[0]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "BIN-CORE-CRASH")
+    );
+    // Code-level verbs refuse a core instead of analysing memory as a program.
+    let out = rex()
+        .arg("functions")
+        .arg(fx("core_x64.elf"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rex core"));
+    let out = rex().arg("core").arg(fx("vuln.elf")).output().unwrap();
+    assert!(!out.status.success());
 }
 
 #[test]
@@ -451,4 +499,48 @@ fn compare_reports_gates_on_regressions() {
     std::fs::write(&junk, "not json").unwrap();
     let e = rex().arg("compare").arg(&junk).arg(&good).output().unwrap();
     assert_eq!(e.status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn decompile_runs_ghidra_headless_and_explains_when_it_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    // A stand-in analyzeHeadless that answers for whatever address it is asked about.
+    let stub = d.path().join("analyzeHeadless");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = RexDecompile.java ]; then out=$2; addr=$5; fi\n  shift\ndone\n\
+         printf '[{\"name\":\"FUN_%s\",\"entry\":%d,\"c\":\"int check_password(char *p)\\\\n{\\\\n  return strlen(p) == 8;\\\\n}\",\"error\":null}]' \"$addr\" \"$((0x$addr))\" > \"$out\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = stdout(
+        rex()
+            .env("REX_GHIDRA", &stub)
+            .args(["decompile"])
+            .arg(fx("crackme.elf"))
+            .arg("check_password"),
+    );
+    // rex's name for the function wins over Ghidra's FUN_ name.
+    assert!(
+        out.contains("check_password @ 0x") && out.contains("strlen(p)"),
+        "{out}"
+    );
+
+    let missing = rex()
+        .env_remove("REX_GHIDRA")
+        .env_remove("GHIDRA_INSTALL_DIR")
+        .env("PATH", d.path().join("empty"))
+        .args(["decompile"])
+        .arg(fx("crackme.elf"))
+        .arg("check_password")
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    let err = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        err.contains("needs Ghidra") && err.contains("rex doctor"),
+        "{err}"
+    );
 }

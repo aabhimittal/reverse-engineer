@@ -50,6 +50,17 @@ __asm__(".globl _start\n_start:\n"
         "  ldr x1, [sp]\n  add x2, sp, #8\n"
         LOAD_MAIN
         "  bl __libc_start_main\n  brk #0\n");
+#elif defined(LIBC_START)
+/* 32-bit glibc-style PIE _start (ARM mode, as in crt1.o): main's address is loaded from its GOT
+ * slot, found through a literal pool, and passed in r0 to __libc_start_main. Built with -mthumb,
+ * main is Thumb code, so the slot holds main | 1. */
+extern int __libc_start_main(int (*)(int, char **), int, char **);
+__asm__(".arm\n.globl _start\n.type _start, %function\n_start:\n"
+        "  ldr sl, .Lgot\n  adr r3, .Lgot\n  add sl, sl, r3\n"
+        "  ldr ip, .Lgot+4\n  ldr r0, [sl, ip]\n"
+        "  ldr r1, [sp]\n  add r2, sp, #4\n"
+        "  bl __libc_start_main\n  udf #0\n"
+        ".Lgot: .word _GLOBAL_OFFSET_TABLE_ - .Lgot\n  .word main(GOT)\n");
 #else
 void start_c(long *sp) {
     int argc = (int)*sp;

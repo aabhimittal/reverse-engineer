@@ -107,6 +107,9 @@ pub struct Program {
     pub main: Option<u64>,
     /// True if the architecture isn't supported by the built-in decoder.
     pub unsupported_arch: bool,
+    /// 32-bit ARM: recovered functions that are Thumb code.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub thumb: BTreeSet<u64>,
 }
 
 impl Program {
@@ -217,7 +220,7 @@ fn stub_section(name: &str) -> bool {
 /// Recover functions, CFGs and the call graph.
 pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
     let mut prog = Program::default();
-    let Some(mut x) = decoder_for(bin, &Names::default()) else {
+    let Some(mut x) = decoder_for(bin, data, &Names::default()) else {
         prog.unsupported_arch = true;
         for s in &bin.symbols {
             prog.names.insert(s.addr, s.display().to_string());
@@ -259,7 +262,12 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
             {
                 block_start = Some(i.addr);
             }
-            if i.mnemonic == "endbr64" || i.mnemonic == "endbr32" {
+            // An ARM PLT entry starts by building the GOT address from pc; the words between
+            // entries are padding, not code.
+            if i.mnemonic == "endbr64"
+                || i.mnemonic == "endbr32"
+                || i.text.starts_with("add ip, pc")
+            {
                 block_start = Some(i.addr);
             }
             match i.flow {
@@ -288,6 +296,9 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
 
     // 4. Seeds.
     let in_code = |a: u64| bin.code_sections().any(|s| s.contains(a));
+    // Code pointers read from memory, as found: on 32-bit ARM bit 0 says Thumb, and the decoder
+    // built for exploration below must learn the same modes.
+    let mut code_ptrs: Vec<u64> = Vec::new();
     let mut seeds: BTreeSet<u64> = BTreeSet::new();
     if bin.entry != 0 && in_code(bin.entry) {
         seeds.insert(bin.entry);
@@ -387,8 +398,55 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
         }
     }
 
+    // 5c. 32-bit ARM: glibc's `_start` (ARM mode) puts main in r0, either straight from a literal
+    //     pool or, in PIE builds, from main's GOT slot (`ldr r0, [sl, ip]`). The pointer has bit 0
+    //     set when main is Thumb code.
+    if prog.main.is_none()
+        && bin.arch == crate::model::Arch::Arm
+        && bin.entry != 0
+        && bin.format == BinFormat::Elf
+    {
+        if let Some(bytes) = bin.bytes_at(data, bin.entry) {
+            let insns = x.linear(&bytes[..bytes.len().min(256)], bin.entry, 64);
+            let mut candidate = None;
+            for i in &insns {
+                if i.text.split_whitespace().nth(1) == Some("r0,") {
+                    candidate = i.data_ref.map(|r| (r, i.mnemonic == "ldr"));
+                }
+                let is_libc_start = match i.flow {
+                    Flow::Call(t) => names
+                        .get(&t)
+                        .is_some_and(|n| n.contains("__libc_start_main")),
+                    _ => false,
+                };
+                if is_libc_start {
+                    let ptr = candidate.and_then(|(c, slot)| {
+                        if slot {
+                            read_ptr(bin, data, c)
+                        } else {
+                            Some(c)
+                        }
+                    });
+                    if let Some(ptr) = ptr {
+                        let m = x.code_addr(ptr);
+                        if in_code(m) {
+                            code_ptrs.push(ptr);
+                            prog.main = Some(m);
+                            seeds.insert(m);
+                            names.entry(m).or_insert_with(|| "main".into());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     let names_arc = Names(Arc::new(names.clone()));
-    let mut x = decoder_for(bin, &names_arc).expect("decoder was available above");
+    let mut x = decoder_for(bin, data, &names_arc).expect("decoder was available above");
+    for &p in &code_ptrs {
+        x.code_addr(p);
+    }
 
     // 6. Explore.
     // When --max-functions cuts discovery short, spend the budget on the code someone is most
@@ -433,6 +491,9 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
             if in_code(c) && !done.contains(&c) && !prog.stubs.contains_key(&c) {
                 queue.push(std::cmp::Reverse((rank(c), depth.saturating_add(1), c)));
             }
+        }
+        if x.is_thumb(start) {
+            prog.thumb.insert(start);
         }
         prog.functions.insert(start, f);
     }
