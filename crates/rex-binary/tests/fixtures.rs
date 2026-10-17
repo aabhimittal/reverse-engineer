@@ -440,6 +440,66 @@ mod arm {
     }
 }
 
+#[test]
+fn elf_relocations_from_every_table() {
+    let b = Binary::parse(&fixture("crackme.elf")).unwrap();
+    let slot = |sym: &str| b.relocs.iter().find(|r| r.symbol.as_deref() == Some(sym));
+    let puts = slot("puts").expect("puts JUMP_SLOT");
+    assert_eq!(puts.kind_name, "R_X86_64_JUMP_SLOT");
+    assert_eq!(puts.table, "plt");
+    // -z now: the whole GOT is under RELRO.
+    assert!(puts.relro && puts.writable);
+    assert!(
+        b.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_X86_64_RELATIVE" && r.table == "rela")
+    );
+    assert!(rex_binary::relocs::textrel_finding(&b).is_none());
+
+    // The same program with -z pack-relative-relocs: the RELATIVE entries move to RELR.
+    let relr = Binary::parse(&fixture("crackme.relr.elf")).unwrap();
+    let packed: Vec<_> = relr.relocs.iter().filter(|r| r.table == "relr").collect();
+    assert_eq!(packed.len(), 3, "{packed:?}");
+    assert!(packed.iter().all(|r| r.kind_name == "R_X86_64_RELATIVE"));
+    // RELR addends live in the slot: .init_array's entry points at a function.
+    let init = packed
+        .iter()
+        .find(|r| r.section.as_deref() == Some(".init_array"));
+    assert!(init.and_then(|r| r.addend).is_some_and(|a| a > 0));
+
+    // REL (ARM): JUMP_SLOTs from DT_JMPREL, and main's RELATIVE GOT slot holds main | 1.
+    let arm = Binary::parse(&fixture("sample_thumb.elf")).unwrap();
+    assert!(
+        arm.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_ARM_JUMP_SLOT" && r.symbol.as_deref() == Some("stub_log"))
+    );
+    let main = arm.symbols.iter().find(|s| s.name == "main").unwrap().addr;
+    assert!(
+        arm.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_ARM_RELATIVE" && r.addend == Some(main as i64 | 1))
+    );
+}
+
+#[test]
+fn text_relocations_are_reported() {
+    let b = Binary::parse(&fixture("textrel_arm.elf")).unwrap();
+    let f = rex_binary::relocs::textrel_finding(&b).expect("TEXTREL finding");
+    assert_eq!(f.id, "BIN-ELF-TEXTREL");
+    assert!(
+        f.evidence.iter().any(|e| e.contains(".text")),
+        "{:?}",
+        f.evidence
+    );
+    let ids: Vec<String> = report("textrel_arm.elf")
+        .findings
+        .into_iter()
+        .map(|f| f.id)
+        .collect();
+    assert!(ids.contains(&"BIN-ELF-TEXTREL".to_string()), "{ids:?}");
+}
+
 #[cfg(not(feature = "multiarch"))]
 #[test]
 fn arm_without_multiarch_degrades_to_unsupported_not_to_wrong_answers() {

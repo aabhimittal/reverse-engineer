@@ -31,6 +31,7 @@ pub mod functions;
 pub mod go;
 pub mod model;
 pub mod packer;
+pub mod relocs;
 pub mod strings;
 pub mod wasm;
 pub mod wasm_ops;

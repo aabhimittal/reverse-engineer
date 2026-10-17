@@ -181,6 +181,13 @@ enum Cmd {
     },
     /// List recovered functions.
     Functions { path: PathBuf },
+    /// ELF dynamic relocations (RELA, REL, PLT, RELR), or the GOT with `--got`.
+    Relocs {
+        path: PathBuf,
+        /// Show each GOT slot: what the loader writes, the PLT stub using it, and RELRO.
+        #[arg(long)]
+        got: bool,
+    },
     /// Disassemble a function or address range.
     Disasm {
         path: PathBuf,
@@ -498,6 +505,10 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Functions { path } => {
             let a = ctx.load(&path)?;
             ctx.emit(&[rex_engine::functions_report(&a, o)?])
+        }
+        Cmd::Relocs { path, got } => {
+            let a = ctx.load(&path)?;
+            ctx.emit(&[rex_engine::relocs_report(&a, o, got)?])
         }
         Cmd::Disasm {
             path,

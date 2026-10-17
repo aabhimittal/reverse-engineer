@@ -105,6 +105,21 @@ fn binary_subcommands() {
     assert!(stdout(rex().arg("callgraph").arg(fx("crackme.stripped.elf"))).contains("flowchart"));
     assert!(stdout(rex().arg("xrefs").arg(fx("vuln.elf")).arg("gets")).contains("main"));
     assert!(stdout(rex().arg("functions").arg(fx("hello.macho"))).contains("_verify"));
+    let got = stdout(rex().arg("relocs").arg(fx("crackme.elf")).arg("--got"));
+    assert!(
+        got.contains("R_X86_64_JUMP_SLOT") && got.contains("puts@plt") && got.contains("read-only"),
+        "{got}"
+    );
+    let json = stdout(
+        rex()
+            .arg("relocs")
+            .arg(fx("crackme.relr.elf"))
+            .args(["-f", "json"]),
+    );
+    assert!(
+        json.contains("\"table\": \"relr\"") || json.contains("\"table\":\"relr\""),
+        "{json}"
+    );
     assert!(
         stdout(
             rex()

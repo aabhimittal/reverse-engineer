@@ -266,6 +266,9 @@ pub struct Binary {
     /// function's symbol value is its address | 1).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub arm_map: Vec<(u64, char)>,
+    /// ELF dynamic relocations (see `rex relocs`).
+    #[serde(skip)]
+    pub relocs: Vec<crate::relocs::Reloc>,
     /// Go toolchain build information, for binaries built by Go.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub go: Option<crate::go::BuildInfo>,
@@ -816,10 +819,40 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         function_starts: Vec::new(),
         relocated_ptrs: elf_relative_relocs(e),
         arm_map,
+        relocs: Vec::new(),
         go: None,
         dotnet: None,
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
+    let (relocs, cut) = crate::relocs::elf(e, &b, data);
+    if !relocs.is_empty() {
+        let mut counts: Vec<(&str, usize)> = Vec::new();
+        for r in &relocs {
+            match counts.iter_mut().find(|c| c.0 == r.table) {
+                Some(c) => c.1 += 1,
+                None => counts.push((r.table, 1)),
+            }
+        }
+        let mut v: Vec<String> = counts.iter().map(|(t, n)| format!("{t} {n}")).collect();
+        if cut {
+            v.push(format!("stopped at {}", crate::relocs::MAX_RELOCS));
+        }
+        b.extras.push(("Relocations".into(), v.join(", ")));
+    }
+    let textrel_flag = e.dynamic.as_ref().is_some_and(|d| {
+        d.dyns.iter().any(|x| {
+            x.d_tag == elf::dynamic::DT_TEXTREL
+                || (x.d_tag == elf::dynamic::DT_FLAGS && x.d_val & elf::dynamic::DF_TEXTREL != 0)
+        })
+    });
+    let text = crate::relocs::text_relocs(&relocs).count();
+    if textrel_flag || text > 0 {
+        b.extras.push((
+            "TEXTREL".into(),
+            format!("{text} relocations in read-only sections"),
+        ));
+    }
+    b.relocs = relocs;
     b.mitigations = crate::checksec::elf(e, &b, data);
     b
 }
@@ -1090,6 +1123,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
         relocated_ptrs: Vec::new(),
         arm_map: Vec::new(),
+        relocs: Vec::new(),
         go: None,
         dotnet: None,
     };
@@ -1556,6 +1590,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         function_starts: macho_function_starts(m, data),
         relocated_ptrs: Vec::new(),
         arm_map: Vec::new(),
+        relocs: Vec::new(),
         go: None,
         dotnet: None,
     };

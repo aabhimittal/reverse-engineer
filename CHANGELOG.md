@@ -35,4 +35,5 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - .NET: CLI metadata reader (assembly, referenced assemblies, types, methods, string literals, P/Invoke imports, which also feed the capability rules).
 - PE: version-info strings, and manifest `requestedExecutionLevel` / `uiAccess` findings.
 - Thumb-2 code recovery on 32-bit ARM, including mixed ARM/Thumb binaries (mode from mapping symbols, symbol and pointer bit 0, and `blx`); `it` blocks; ARM32 PLT entries are named and literal-pool string references resolved in both modes; `main` inference for 32-bit glibc `_start`, including the PIE form that loads it from its GOT slot.
+- `rex relocs [--got]`: ELF dynamic relocations from RELA, REL, PLT and RELR tables (type, symbol, addend, section, RELRO), and a GOT view naming the PLT stub and target of each slot; `BIN-ELF-TEXTREL` for relocations in read-only sections; MCP tool `rex_relocs`.
 - `rex compare old.json new.json`: what changed between two saved reports; new or escalated findings honour `--fail-on`.

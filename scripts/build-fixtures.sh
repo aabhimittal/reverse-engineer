@@ -18,6 +18,9 @@ echo "[*] ELF (x86-64, hardened)"
 cc -O1 -g0 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now \
    -Wl,--build-id=none -o "$OUT/crackme.elf" "$LABS/01-crackme/crackme.c"
 strip -o "$OUT/crackme.stripped.elf" "$OUT/crackme.elf"
+# The same program with its RELATIVE relocations packed into a RELR table.
+cc -O1 -g0 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now \
+   -Wl,-z,pack-relative-relocs -Wl,--build-id=none -o "$OUT/crackme.relr.elf" "$LABS/01-crackme/crackme.c"
 
 echo "[*] ELF (x86-64, no mitigations)"
 cc -O0 -fno-stack-protector -no-pie -z execstack -Wl,-z,norelro -Wl,--build-id=none -w \
@@ -87,6 +90,9 @@ for spec in "aarch64-linux-gnu:sample_a64.elf:/lib/ld-linux-aarch64.so.1:" \
 done
 llvm-strip -o "$OUT/sample_a64.stripped.elf" "$OUT/sample_a64.elf"
 llvm-strip -o "$OUT/sample_thumb.stripped.elf" "$OUT/sample_thumb.elf"
+# A text relocation (R_ARM_RELATIVE in .text, linked with -z notext).
+clang --target=armv7-linux-gnueabi -c "$LABS/05-arm/textrel.s" -o "$TMP/textrel.o"
+ld.lld -pie -z notext --build-id=none -o "$OUT/textrel_arm.elf" "$TMP/textrel.o"
 # glibc-style PIE _start: main comes from a GOT slot that holds 0 on disk and is filled by an
 # R_AARCH64_RELATIVE relocation. --no-relax keeps the GOT load instead of turning it into adrp+add.
 clang --target=aarch64-linux-gnu -DGOT_START -O1 -fPIE -ffreestanding -fno-stack-protector \

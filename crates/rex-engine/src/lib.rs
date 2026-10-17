@@ -284,6 +284,149 @@ fn program_summary(p: &Program) -> serde_json::Value {
     })
 }
 
+/// Rows shown in the relocation table (the JSON data has every entry).
+const RELOC_ROWS: usize = 20_000;
+
+/// ELF dynamic relocations, or with `got`, each GOT slot: what the loader writes there, the PLT
+/// stub that jumps through it, and whether RELRO makes it read-only afterwards.
+pub fn relocs_report(a: &Artifact, opts: &AnalysisOptions, got: bool) -> Result<Report> {
+    let start = Instant::now();
+    let b = native(a)?;
+    if b.format != rex_binary::model::BinFormat::Elf {
+        return Err(Error::Unsupported(format!(
+            "relocations are read from ELF files; {} is {:?}",
+            a.name(),
+            b.format
+        )));
+    }
+    let mut rep = new_report(
+        format!(
+            "rex relocs{}: {}",
+            if got { " --got" } else { "" },
+            a.name()
+        ),
+        a,
+    );
+    let mut summary: Vec<(String, String)> = Vec::new();
+    let mut by_type: Vec<(&str, usize)> = Vec::new();
+    for r in &b.relocs {
+        match by_type.iter_mut().find(|c| c.0 == r.kind_name) {
+            Some(c) => c.1 += 1,
+            None => by_type.push((&r.kind_name, 1)),
+        }
+    }
+    by_type.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
+    summary.push(("Relocations".into(), b.relocs.len().to_string()));
+    for (k, v) in b
+        .extras
+        .iter()
+        .filter(|(k, _)| k == "Relocations" || k == "TEXTREL")
+    {
+        summary.push((
+            if k == "Relocations" { "Tables" } else { k }.to_string(),
+            v.clone(),
+        ));
+    }
+    for (t, n) in by_type.iter().take(8) {
+        summary.push((t.to_string(), n.to_string()));
+    }
+    if let Some(m) = b.mitigations.iter().find(|m| m.name == "RELRO") {
+        summary.push(("RELRO".into(), m.detail.clone()));
+    }
+    rep.push(Section::kv("relocs.summary", "Summary", summary));
+    rep.findings.extend(rex_binary::relocs::textrel_finding(&b));
+    if got {
+        // Who uses each slot: the PLT stub named after the slot's import, or the function a
+        // RELATIVE slot points at.
+        let p = functions::analyze(&b, a.data(), opts);
+        let stub_of: std::collections::HashMap<&str, u64> = p
+            .stubs
+            .iter()
+            .map(|(&addr, n)| (n.as_str(), addr))
+            .collect();
+        let rows: Vec<Vec<String>> = b
+            .relocs
+            .iter()
+            .filter(|r| {
+                r.section.as_deref().is_some_and(|s| s.starts_with(".got"))
+                    || r.kind_name.contains("JUMP_SLOT")
+                    || r.kind_name.contains("JMP_SLOT")
+                    || r.kind_name.contains("GLOB_DAT")
+            })
+            .map(|r| {
+                let target = match (&r.symbol, r.addend) {
+                    (Some(s), _) => s.clone(),
+                    // On 32-bit ARM a Thumb code pointer is its address | 1.
+                    (None, Some(v)) => match p.names.get(&(v as u64)).or_else(|| {
+                        (b.arch == rex_binary::model::Arch::Arm)
+                            .then(|| p.names.get(&(v as u64 & !1)))
+                            .flatten()
+                    }) {
+                        Some(n) => format!("{} ({n})", hex(v as u64)),
+                        None => hex(v as u64),
+                    },
+                    (None, None) => String::new(),
+                };
+                let stub = r
+                    .symbol
+                    .as_deref()
+                    .and_then(|s| stub_of.get(s))
+                    .map(|&a| format!("{} ({}@plt)", hex(a), r.symbol.as_deref().unwrap_or("")))
+                    .unwrap_or_default();
+                vec![
+                    hex(r.offset),
+                    r.section.clone().unwrap_or_default(),
+                    r.kind_name.clone(),
+                    target,
+                    stub,
+                    if r.relro { "read-only" } else { "writable" }.into(),
+                ]
+            })
+            .collect();
+        rep.push(Section::table(
+            "relocs.got",
+            "GOT slots",
+            &[
+                "slot",
+                "section",
+                "type",
+                "target",
+                "PLT stub",
+                "after load",
+            ],
+            rows,
+            RELOC_ROWS,
+        ));
+    } else {
+        let rows: Vec<Vec<String>> = b
+            .relocs
+            .iter()
+            .map(|r| {
+                vec![
+                    hex(r.offset),
+                    r.kind_name.clone(),
+                    r.symbol.clone().unwrap_or_default(),
+                    r.addend.map(|v| format!("{v:#x}")).unwrap_or_default(),
+                    r.section.clone().unwrap_or_default(),
+                    r.table.into(),
+                ]
+            })
+            .collect();
+        rep.push(
+            Section::table(
+                "relocs.table",
+                "Relocations",
+                &["offset", "type", "symbol", "addend", "section", "table"],
+                rows,
+                RELOC_ROWS,
+            )
+            .with_data(&b.relocs),
+        );
+    }
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
 /// Disassemble a function (by name/address) or a raw range.
 pub fn disasm(
     a: &Artifact,

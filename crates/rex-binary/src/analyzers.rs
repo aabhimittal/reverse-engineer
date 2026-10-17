@@ -114,6 +114,9 @@ impl Analyzer for Info {
                 .evidence(format!("requestedExecutionLevel level=\"{l}\"")),
             );
         }
+        if let Some(f) = crate::relocs::textrel_finding(&b) {
+            out.finding(f);
+        }
         if extra("Manifest: uiAccess") == Some("true") {
             out.finding(
                 Finding::new(

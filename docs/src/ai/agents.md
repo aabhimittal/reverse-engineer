@@ -29,7 +29,7 @@ other servers and settings, and `--uninstall` removes only the `rex` entry.
 ## Tools and workflows
 
 The MCP server exposes `rex_analyze`, `rex_checksec`, `rex_strings`, `rex_functions`, `rex_disasm`,
-`rex_cfg`, `rex_xrefs`, `rex_diff`, `rex_carve`, `rex_har_to_openapi` and `rex_code_map`. It also
+`rex_cfg`, `rex_xrefs`, `rex_relocs`, `rex_diff`, `rex_carve`, `rex_har_to_openapi` and `rex_code_map`. It also
 publishes **prompts**, which are reusable plans for combining them. Clients that support MCP prompts
 show them as slash-style commands:
 
