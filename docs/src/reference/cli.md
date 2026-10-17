@@ -23,6 +23,8 @@ Commands:
   xrefs        Cross-references for a function, import or string
   carve        Find (and optionally extract) embedded files and filesystems
   diff         Function-level diff of two binaries (patch analysis)
+  compare      Compare two saved `rex analyze -f json` reports (what changed between builds or
+               runs). With --fail-on, new or escalated findings fail the run
   web          Web & API reverse engineering
   apk          Analyse an Android APK (shortcut for `analyze`)
   code         Codebase archaeology
@@ -37,20 +39,22 @@ Commands:
   help         Print this message or the help of the given subcommand(s)
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 
 Examples:
   rex analyze ./suspicious.exe                  Auto-detect and analyse anything
@@ -77,27 +81,29 @@ Arguments:
   <PATHS>...  Inputs
 
 Options:
-  -f, --format <FORMAT>         Output format (default: text, or inferred from --output extension)
-                                [possible values: text, json, md, sarif, html]
-      --only <ONLY>             Only run analyzers whose name starts with one of these
-                                (comma-separated), e.g. binary.checksec,binary.strings
-      --deep                    Enable expensive passes (full listings)
-  -o, --output <FILE>           Write output to a file instead of stdout
-      --ai                      Add an LLM-written briefing to the report (sends a redacted report
-                                to the provider)
-      --color <COLOR>           Colourise terminal output [default: auto] [possible values: auto,
-                                always, never]
-      --ai-provider <PROVIDER>  AI provider: anthropic (default) or ollama (local)
-      --max-rows <MAX_ROWS>     Maximum rows per table (0 = unlimited) [default: 50]
-      --ai-model <MODEL>        Model override (default: claude-opus-5-5 / llama3.1)
-      --max-size <MAX_SIZE>     Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>      Exit with status 3 if any finding is at or above this severity (CI
-                                gating)
-      --as <KIND>               Override input type detection [possible values: elf, pe, macho, apk,
-                                dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...              Verbose logging (-v, -vv)
-  -h, --help                    Print help
-  -V, --version                 Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+      --only <ONLY>                    Only run analyzers whose name starts with one of these
+                                       (comma-separated), e.g. binary.checksec,binary.strings
+      --deep                           Enable expensive passes (full listings)
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --ai                             Add an LLM-written briefing to the report (sends a redacted
+                                       report to the provider)
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --ai-provider <PROVIDER>         AI provider: anthropic (default) or ollama (local)
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --ai-model <MODEL>               Model override (default: claude-opus-5-5 / llama3.1)
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex disasm
@@ -111,23 +117,25 @@ Arguments:
   <PATH>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -F, --function <FUNCTION>  Function name or address
-  -a, --addr <ADDR>          Start address (hex)
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-  -n, --count <COUNT>        Instructions to decode (address mode) [default: 64]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -F, --function <FUNCTION>            Function name or address
+  -a, --addr <ADDR>                    Start address (hex)
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+  -n, --count <COUNT>                  Instructions to decode (address mode) [default: 64]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex xrefs
@@ -142,20 +150,22 @@ Arguments:
   <TARGET>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex carve
@@ -169,21 +179,23 @@ Arguments:
   <PATH>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -x, --extract <DIR>        Extract into this directory
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -x, --extract <DIR>                  Extract into this directory
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex diff
@@ -198,20 +210,22 @@ Arguments:
   <NEW>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex setup
@@ -263,6 +277,11 @@ Options:
       --command <PATH>
           Path the agent should launch (default: this executable)
 
+      --max-functions <MAX_FUNCTIONS>
+          Stop function discovery after this many functions (large binaries are reported as partial)
+          
+          [default: 5000]
+
       --max-size <MAX_SIZE>
           Refuse inputs larger than this many MiB
           
@@ -294,20 +313,22 @@ Check this build, AI credentials and which companion tools (Ghidra, jadx, ...) a
 Usage: rex doctor [OPTIONS]
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex web har2openapi
@@ -321,24 +342,26 @@ Arguments:
   <HAR>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-      --json                 Emit JSON instead of YAML
-      --include-static       Keep static assets (JS, CSS, images)
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --host <HOST>          Only hosts containing this text (repeatable)
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --title <TITLE>        API title
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+      --json                           Emit JSON instead of YAML
+      --include-static                 Keep static assets (JS, CSS, images)
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --host <HOST>                    Only hosts containing this text (repeatable)
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --title <TITLE>                  API title
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex web sourcemap
@@ -352,21 +375,23 @@ Arguments:
   <PATH>  
 
 Options:
-  -d, --dir <DIR>            Output directory [default: rex-out/sources]
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -d, --dir <DIR>                      Output directory [default: rex-out/sources]
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex web asar
@@ -380,21 +405,23 @@ Arguments:
   <PATH>  
 
 Options:
-  -d, --dir <DIR>            Output directory [default: rex-out/asar]
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -d, --dir <DIR>                      Output directory [default: rex-out/asar]
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex code map
@@ -408,20 +435,22 @@ Arguments:
   <PATH>  
 
 Options:
-  -f, --format <FORMAT>      Output format (default: text, or inferred from --output extension)
-                             [possible values: text, json, md, sarif, html]
-  -o, --output <FILE>        Write output to a file instead of stdout
-      --color <COLOR>        Colourise terminal output [default: auto] [possible values: auto,
-                             always, never]
-      --max-rows <MAX_ROWS>  Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>  Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>   Exit with status 3 if any finding is at or above this severity (CI
-                             gating)
-      --as <KIND>            Override input type detection [possible values: elf, pe, macho, apk,
-                             dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...           Verbose logging (-v, -vv)
-  -h, --help                 Print help
-  -V, --version              Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ## rex ai name
@@ -435,23 +464,25 @@ Arguments:
   <PATH>  
 
 Options:
-  -f, --format <FORMAT>         Output format (default: text, or inferred from --output extension)
-                                [possible values: text, json, md, sarif, html]
-      --limit <LIMIT>           Maximum functions to send [default: 25]
-      --ai                      Add an LLM-written briefing to the report (sends a redacted report
-                                to the provider)
-  -o, --output <FILE>           Write output to a file instead of stdout
-      --ai-provider <PROVIDER>  AI provider: anthropic (default) or ollama (local)
-      --color <COLOR>           Colourise terminal output [default: auto] [possible values: auto,
-                                always, never]
-      --ai-model <MODEL>        Model override (default: claude-opus-5-5 / llama3.1)
-      --max-rows <MAX_ROWS>     Maximum rows per table (0 = unlimited) [default: 50]
-      --max-size <MAX_SIZE>     Refuse inputs larger than this many MiB [default: 1024]
-      --fail-on <SEVERITY>      Exit with status 3 if any finding is at or above this severity (CI
-                                gating)
-      --as <KIND>               Override input type detection [possible values: elf, pe, macho, apk,
-                                dex, axml, har, js, sourcemap, wasm, asar, blob]
-  -v, --verbose...              Verbose logging (-v, -vv)
-  -h, --help                    Print help
-  -V, --version                 Print version
+  -f, --format <FORMAT>                Output format (default: text, or inferred from --output
+                                       extension) [possible values: text, json, md, sarif, html]
+      --limit <LIMIT>                  Maximum functions to send [default: 25]
+      --ai                             Add an LLM-written briefing to the report (sends a redacted
+                                       report to the provider)
+  -o, --output <FILE>                  Write output to a file instead of stdout
+      --ai-provider <PROVIDER>         AI provider: anthropic (default) or ollama (local)
+      --color <COLOR>                  Colourise terminal output [default: auto] [possible values:
+                                       auto, always, never]
+      --ai-model <MODEL>               Model override (default: claude-opus-5-5 / llama3.1)
+      --max-rows <MAX_ROWS>            Maximum rows per table (0 = unlimited) [default: 50]
+      --max-functions <MAX_FUNCTIONS>  Stop function discovery after this many functions (large
+                                       binaries are reported as partial) [default: 5000]
+      --max-size <MAX_SIZE>            Refuse inputs larger than this many MiB [default: 1024]
+      --fail-on <SEVERITY>             Exit with status 3 if any finding is at or above this
+                                       severity (CI gating)
+      --as <KIND>                      Override input type detection [possible values: elf, pe,
+                                       macho, apk, dex, axml, har, js, sourcemap, wasm, asar, blob]
+  -v, --verbose...                     Verbose logging (-v, -vv)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```

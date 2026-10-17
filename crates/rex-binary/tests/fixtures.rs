@@ -391,3 +391,60 @@ fn arm_without_multiarch_degrades_to_unsupported_not_to_wrong_answers() {
     let p = functions::analyze(&b, &data, &AnalysisOptions::default());
     assert!(p.unsupported_arch && p.functions.is_empty());
 }
+
+#[test]
+fn dotnet_metadata_is_read_from_a_real_assembly() {
+    // Microsoft.Bcl.AsyncInterfaces 8.0.0 (netstandard2.1), MIT licensed; see THIRD_PARTY.md.
+    let data = fixture("dotnet_asyncinterfaces.dll");
+    let b = Binary::parse(&data).unwrap();
+    let dn = b.dotnet.as_ref().expect("CLI metadata");
+    assert_eq!(dn.runtime, "v4.0.30319");
+    assert_eq!(
+        dn.assembly,
+        Some(("Microsoft.Bcl.AsyncInterfaces".into(), "8.0.0.0".into()))
+    );
+    assert!(
+        dn.assembly_refs.iter().any(|(n, _)| n == "netstandard"),
+        "{:?}",
+        dn.assembly_refs
+    );
+    assert!(
+        dn.types.iter().any(|t| t.starts_with("System.")),
+        "{:?}",
+        dn.types
+    );
+    assert!(dn.method_count > 0 && dn.type_count > 0);
+    assert!(dn.il_only && dn.strong_named);
+    assert!(dn.pinvokes.is_empty());
+}
+
+#[test]
+fn pe_version_info_and_manifest_elevation() {
+    let dll = Binary::parse(&fixture("dotnet_asyncinterfaces.dll")).unwrap();
+    let get = |b: &Binary, k: &str| {
+        b.extras
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get(&dll, "Version: CompanyName").as_deref(),
+        Some("Microsoft Corporation")
+    );
+    assert_eq!(
+        get(&dll, "Version: OriginalFilename").as_deref(),
+        Some("Microsoft.Bcl.AsyncInterfaces.dll")
+    );
+
+    let exe = Binary::parse(&fixture("elevated.exe")).unwrap();
+    assert_eq!(
+        get(&exe, "Manifest: requestedExecutionLevel").as_deref(),
+        Some("requireAdministrator")
+    );
+    let r = report("elevated.exe");
+    let ids: Vec<&str> = r.findings.iter().map(|f| f.id.as_str()).collect();
+    assert!(
+        ids.contains(&"BIN-PE-MANIFEST-ELEVATION") && ids.contains(&"BIN-PE-MANIFEST-UIACCESS"),
+        "{ids:?}"
+    );
+}

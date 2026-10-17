@@ -260,16 +260,39 @@ pub struct Binary {
     /// pointer lives in the relocation addend (e.g. the GOT slot glibc's PIE `_start` loads
     /// `main` from).
     pub relocated_ptrs: Vec<(u64, u64)>,
+    /// Go toolchain build information, for binaries built by Go.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub go: Option<crate::go::BuildInfo>,
+    /// .NET metadata, for managed (CLI) assemblies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dotnet: Option<crate::dotnet::DotNet>,
 }
 
 impl Binary {
+    /// Parse an artifact once and share the result with every other caller on the same artifact
+    /// (a full `rex analyze` used to parse the same file once per analyzer).
+    pub fn of(a: &rex_core::Artifact) -> Result<std::sync::Arc<Self>> {
+        a.memo(|a| {
+            Self::parse(a.data())
+                .map(std::sync::Arc::new)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .clone()
+        .map_err(|e| Error::parse("binary", e))
+    }
+
     /// Parse any supported format.
     ///
     /// Third-party parsers occasionally panic on hostile input; such panics are
     /// converted into [`Error::Parse`] so callers never crash on a malformed file.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        std::panic::catch_unwind(|| Self::parse_inner(data))
-            .unwrap_or_else(|_| Err(Error::parse("binary", "malformed input (parser panicked)")))
+        std::panic::catch_unwind(|| {
+            let mut b = Self::parse_inner(data)?;
+            enrich_go(&mut b, data);
+            Ok(b)
+        })
+        .unwrap_or_else(|_| Err(Error::parse("binary", "malformed input (parser panicked)")))
     }
 
     fn parse_inner(data: &[u8]) -> Result<Self> {
@@ -279,7 +302,15 @@ impl Binary {
             Object::PE(p) => Ok(from_pe(&p, data)),
             Object::Mach(mach::Mach::Binary(m)) => Ok(from_macho(&m, data, 0, data.len() as u64)),
             Object::Mach(mach::Mach::Fat(fat)) => {
-                let arches: Vec<_> = fat.iter_arches().filter_map(|a| a.ok()).collect();
+                // The header's slice count is attacker-controlled (a fuzzed file claimed ~2^31):
+                // stop at the first unreadable entry and never look past what 20-byte entries
+                // after the 8-byte header could fit in the file.
+                let fits = data.len().saturating_sub(8) / 20;
+                let arches: Vec<_> = fat
+                    .iter_arches()
+                    .take(fits.min(256))
+                    .map_while(|a| a.ok())
+                    .collect();
                 let mut chosen = None;
                 let mut names = Vec::new();
                 for (i, a) in arches.iter().enumerate() {
@@ -343,8 +374,10 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| va >= s.addr && va < s.addr + s.file_size)?;
-        Some(self.slice_offset + s.offset + (va - s.addr))
+            .find(|s| va >= s.addr && va - s.addr < s.file_size)?;
+        self.slice_offset
+            .checked_add(s.offset)?
+            .checked_add(va - s.addr)
     }
 
     /// Translate a file offset (in the original file) to a virtual address.
@@ -353,8 +386,8 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| off >= s.offset && off < s.offset + s.file_size)?;
-        Some(s.addr + (off - s.offset))
+            .find(|s| off >= s.offset && off - s.offset < s.file_size)?;
+        s.addr.checked_add(off - s.offset)
     }
 
     /// Borrow bytes starting at a virtual address, bounded by its section.
@@ -362,15 +395,17 @@ impl Binary {
         let s = self
             .mapped()
             .filter(|s| s.file_size > 0)
-            .find(|s| va >= s.addr && va < s.addr + s.file_size)?;
-        let start = (self.slice_offset + s.offset + (va - s.addr)) as usize;
-        let end = (self.slice_offset + s.offset + s.file_size) as usize;
+            .find(|s| va >= s.addr && va - s.addr < s.file_size)?;
+        let base = self.slice_offset.checked_add(s.offset)?;
+        let start = usize::try_from(base.checked_add(va - s.addr)?).ok()?;
+        let end = usize::try_from(base.saturating_add(s.file_size)).unwrap_or(usize::MAX);
         data.get(start..end.min(data.len()))
     }
 
     /// Bytes of a section.
     pub fn section_bytes<'d>(&self, data: &'d [u8], s: &SectionInfo) -> &'d [u8] {
-        let start = (self.slice_offset + s.offset) as usize;
+        let start =
+            usize::try_from(self.slice_offset.saturating_add(s.offset)).unwrap_or(usize::MAX);
         let end = start.saturating_add(s.file_size as usize).min(data.len());
         data.get(start..end).unwrap_or(&[])
     }
@@ -448,6 +483,63 @@ fn elf_arch(machine: u16, bits64: bool) -> Arch {
         EM_RISCV => Arch::RiscV,
         m => Arch::Other(format!("{} ({m})", elf::header::machine_to_str(m))),
     }
+}
+
+/// Go binaries: record the build info, name functions from the pclntab (it survives
+/// stripping), and stop judging Go code by libc hardening flags that don't apply to it.
+fn enrich_go(b: &mut Binary, data: &[u8]) {
+    let hint = b
+        .sections
+        .iter()
+        .find(|s| s.name == ".gopclntab" || s.name == "__gopclntab")
+        .map(|s| b.slice_offset.saturating_add(s.offset) as usize);
+    let info = crate::go::build_info(data);
+    if info.is_none() && hint.is_none() {
+        return;
+    }
+    let text = b
+        .sections
+        .iter()
+        .find(|s| s.name == ".text" || s.name.ends_with("__text"))
+        .map(|s| s.addr);
+    let funcs = crate::go::functions(data, hint, b.little_endian, text);
+    if info.is_none() && funcs.is_empty() {
+        return;
+    }
+    let known: std::collections::HashSet<u64> = b
+        .symbols
+        .iter()
+        .filter(|s| s.kind == SymKind::Func)
+        .map(|s| s.addr)
+        .collect();
+    let new: Vec<Symbol> = funcs
+        .iter()
+        .filter(|f| !known.contains(&f.addr) && b.va_to_offset(f.addr).is_some())
+        .map(|f| sym(&f.name, f.addr, 0, SymKind::Func))
+        .collect();
+    let added = new.len();
+    b.symbols.extend(new);
+    b.symbols.sort_by_key(|s| s.addr);
+    if let Some(i) = &info {
+        b.extras.push(("Go version".into(), i.go_version.clone()));
+        if let Some(p) = &i.path {
+            b.extras.push(("Go main package".into(), p.clone()));
+        }
+    }
+    b.extras.push((
+        "Go function table".into(),
+        format!(
+            "{} functions ({added} not in the symbol table)",
+            funcs.len()
+        ),
+    ));
+    for m in &mut b.mitigations {
+        if matches!(m.name, "FORTIFY_SOURCE" | "Stack canary") {
+            m.status = MitigationStatus::Unknown;
+            m.detail = "not applicable: Go code does not use libc's fortified functions or stack protector (the Go runtime checks stack bounds itself)".into();
+        }
+    }
+    b.go = info.or_else(|| Some(crate::go::BuildInfo::default()));
 }
 
 /// RELATIVE relocations with an explicit addend: slot address -> pointer value at load time
@@ -620,7 +712,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         format!("{}", e.header.e_ident[elf::header::EI_OSABI]),
     )];
     if let Some(notes) = e.iter_note_headers(data) {
-        for n in notes.flatten() {
+        for n in notes.take(4096).map_while(|r| r.ok()) {
             if n.n_type == elf::note::NT_GNU_BUILD_ID && n.name == "GNU" {
                 extras.push(("Build ID".into(), hash::hex(n.desc)));
             }
@@ -631,7 +723,9 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
     }
     if let Some(comment) = sections.iter().find(|s| s.name == ".comment") {
         let start = comment.offset as usize;
-        let end = (start + comment.file_size as usize).min(data.len());
+        let end = start
+            .saturating_add(comment.file_size as usize)
+            .min(data.len());
         if let Some(bytes) = data.get(start..end) {
             let compilers: Vec<String> = bytes
                 .split(|&b| b == 0)
@@ -695,6 +789,8 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         slice_size: data.len() as u64,
         function_starts: Vec::new(),
         relocated_ptrs: elf_relative_relocs(e),
+        go: None,
+        dotnet: None,
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
@@ -758,18 +854,22 @@ fn elf_eh_frame_starts(b: &Binary, data: &[u8]) -> Vec<u64> {
 }
 
 fn elf_end(e: &elf::Elf) -> u64 {
-    let sh_end = e.header.e_shoff + e.header.e_shnum as u64 * e.header.e_shentsize as u64;
+    // Every field here is attacker-controlled: add without overflowing.
+    let sh_end = e
+        .header
+        .e_shoff
+        .saturating_add(e.header.e_shnum as u64 * e.header.e_shentsize as u64);
     let seg_end = e
         .program_headers
         .iter()
-        .map(|p| p.p_offset + p.p_filesz)
+        .map(|p| p.p_offset.saturating_add(p.p_filesz))
         .max()
         .unwrap_or(0);
     let sec_end = e
         .section_headers
         .iter()
         .filter(|s| s.sh_type != elf::section_header::SHT_NOBITS)
-        .map(|s| s.sh_offset + s.sh_size)
+        .map(|s| s.sh_offset.saturating_add(s.sh_size))
         .max()
         .unwrap_or(0);
     sh_end.max(seg_end).max(sec_end)
@@ -803,7 +903,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
             SectionInfo {
                 entropy: section_entropy(data, s.pointer_to_raw_data as u64, file_size),
                 name,
-                addr: base + s.virtual_address as u64,
+                addr: base.wrapping_add(s.virtual_address as u64),
                 size: s.virtual_size as u64,
                 offset: s.pointer_to_raw_data as u64,
                 file_size,
@@ -822,15 +922,21 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         .map(|i| Import {
             library: Some(i.dll.to_string()),
             name: i.name.to_string(),
-            slot: Some(base + i.offset as u64),
+            slot: Some(base.wrapping_add(i.offset as u64)),
         })
         .collect();
     let exports: Vec<Symbol> = p
         .exports
         .iter()
         .filter_map(|e| {
-            e.name
-                .map(|n| sym(n, base + e.rva as u64, e.size as u64, SymKind::Func))
+            e.name.map(|n| {
+                sym(
+                    n,
+                    base.wrapping_add(e.rva as u64),
+                    e.size as u64,
+                    SymKind::Func,
+                )
+            })
         })
         .collect();
 
@@ -907,7 +1013,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
         little_endian: true,
         file_type,
         entry: if p.entry > 0 {
-            base + p.entry as u64
+            base.wrapping_add(p.entry as u64)
         } else {
             0
         },
@@ -931,15 +1037,119 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
                 x.functions()
                     .filter_map(|f| f.ok())
                     .filter(|f| f.begin_address != 0)
-                    .map(|f| base + f.begin_address as u64)
+                    .map(|f| base.wrapping_add(f.begin_address as u64))
                     .collect()
             })
             .unwrap_or_default(),
         // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
         relocated_ptrs: Vec::new(),
+        go: None,
+        dotnet: None,
     };
     b.mitigations = crate::checksec::pe(p, &b);
+    pe_dotnet(p, &mut b, data);
+    pe_resources(p, &mut b);
     b
+}
+
+/// Version-info strings and the application manifest from the resource section.
+fn pe_resources(p: &pe::PE, b: &mut Binary) {
+    let Some(rd) = &p.resource_data else { return };
+    if let Some(vi) = &rd.version_info {
+        let si = &vi.string_info;
+        for (k, v) in [
+            ("CompanyName", si.company_name()),
+            ("ProductName", si.product_name()),
+            ("FileDescription", si.file_description()),
+            ("FileVersion", si.file_version()),
+            ("OriginalFilename", si.original_filename()),
+            ("InternalName", si.internal_name()),
+            ("LegalCopyright", si.legal_copyright()),
+        ] {
+            if let Some(v) = v.map(|v| v.trim_end_matches('\0').trim().to_string()) {
+                if !v.is_empty() {
+                    b.extras
+                        .push((format!("Version: {k}"), v.chars().take(200).collect()));
+                }
+            }
+        }
+    }
+    if let Some(m) = &rd.manifest_data {
+        let text = String::from_utf8_lossy(m.data);
+        let attr = |name: &str| -> Option<String> {
+            let i = text.find(name)? + name.len();
+            let rest = text[i..].trim_start().strip_prefix('=')?.trim_start();
+            let q = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let rest = &rest[1..];
+            Some(rest[..rest.find(q)?].to_string())
+        };
+        if let Some(level) = attr("requestedExecutionLevel level").or_else(|| {
+            text.contains("requestedExecutionLevel")
+                .then(|| attr("level"))
+                .flatten()
+        }) {
+            b.extras
+                .push(("Manifest: requestedExecutionLevel".into(), level));
+        }
+        if let Some(ui) = attr("uiAccess") {
+            b.extras.push(("Manifest: uiAccess".into(), ui));
+        }
+    }
+}
+
+/// Managed assemblies: read the CLI metadata, and surface P/Invoke targets as imports so the
+/// capability rules see `kernel32!VirtualAllocEx` whether it is called natively or from C#.
+fn pe_dotnet(p: &pe::PE, b: &mut Binary, data: &[u8]) {
+    let Some(dd) = p
+        .header
+        .optional_header
+        .as_ref()
+        .and_then(|o| o.data_directories.get_clr_runtime_header())
+    else {
+        return;
+    };
+    let at = |rva: u32| {
+        b.va_to_offset(b.image_base.wrapping_add(rva as u64))
+            .map(|o| o as usize)
+    };
+    let Some(cor) = at(dd.virtual_address) else {
+        return;
+    };
+    let rd32 = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            data.get(o..o.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    // IMAGE_COR20_HEADER: cb, runtime version, MetaData {rva, size}, Flags, …
+    let (Some(meta_rva), Some(meta_size), Some(flags)) =
+        (rd32(cor + 8), rd32(cor + 12), rd32(cor + 16))
+    else {
+        return;
+    };
+    let Some(meta) = at(meta_rva) else { return };
+    let Some(blob) = data.get(meta..meta.saturating_add(meta_size as usize).min(data.len())) else {
+        return;
+    };
+    let Some(dn) = crate::dotnet::parse(blob, flags) else {
+        return;
+    };
+    for (module, name, _) in &dn.pinvokes {
+        let lib = if module.contains('.') {
+            module.clone()
+        } else {
+            format!("{module}.dll")
+        };
+        b.imports.push(Import {
+            library: Some(lib.to_ascii_lowercase()),
+            name: name.clone(),
+            slot: None,
+        });
+    }
+    b.extras.push((".NET runtime".into(), dn.runtime.clone()));
+    if let Some((n, v)) = &dn.assembly {
+        b.extras.push((".NET assembly".into(), format!("{n} {v}")));
+    }
+    b.dotnet = Some(dn);
 }
 
 /// Format a unix timestamp as `YYYY-MM-DD HH:MM:SS UTC` without a date library.
@@ -980,6 +1190,169 @@ fn macho_arch(cputype: u32) -> Arch {
     }
 }
 
+/// More binds than any real program has; a crafted file asks for billions.
+const MAX_MACHO_BINDS: u64 = 2_000_000;
+
+/// Count the binds the dyld bind opcode streams would perform, without performing them.
+///
+/// goblin's bind interpreter expands `BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB` by pushing one
+/// import per repetition, so a single opcode with a huge count exhausts memory (a fuzzed 16 KB file
+/// did). Streams are finite, so summing the counts is cheap and bounds the real work.
+fn macho_bind_count(m: &mach::MachO, data: &[u8], slice_offset: u64) -> u64 {
+    use mach::load_command::CommandVariant;
+    let Some(info) = m.load_commands.iter().find_map(|lc| match &lc.command {
+        CommandVariant::DyldInfo(c) | CommandVariant::DyldInfoOnly(c) => Some(*c),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    let uleb = |d: &[u8], at: &mut usize| -> u64 {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let Some(&b) = d.get(*at) else { return v };
+            *at += 1;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        v
+    };
+    // Mirror goblin: only opcode *starts* are bounded by the stream; operands are read from the
+    // whole slice, so a ULEB count that straddles the stream end is still read in full.
+    let d = data.get(slice_offset as usize..).unwrap_or_default();
+    let mut total = 0u64;
+    for (off, size) in [
+        (info.bind_off, info.bind_size),
+        (info.weak_bind_off, info.weak_bind_size),
+        (info.lazy_bind_off, info.lazy_bind_size),
+    ] {
+        let mut at = off as usize;
+        let end = at.saturating_add(size as usize).min(d.len());
+        while at < end {
+            let op = d[at] & 0xf0;
+            at += 1;
+            match op {
+                // ULEB or SLEB operand; skipping its bytes is the same either way.
+                0x20 | 0x50 | 0x60 | 0x70 | 0x80 => {
+                    uleb(d, &mut at);
+                }
+                0x40 => {
+                    at += d[at.min(d.len())..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map_or(d.len(), |n| n + 1);
+                }
+                0x90 | 0xb0 => total += 1,
+                0xa0 => {
+                    uleb(d, &mut at);
+                    total += 1;
+                }
+                0xc0 => {
+                    total = total.saturating_add(uleb(d, &mut at));
+                    uleb(d, &mut at);
+                }
+                _ => {}
+            }
+            if total > MAX_MACHO_BINDS {
+                return total;
+            }
+        }
+    }
+    total
+}
+
+/// Exported symbols from the dyld export trie, as (name, offset from the `__TEXT` base).
+///
+/// goblin's own walker follows child edges without remembering where it has been, so a trie whose
+/// nodes point back at each other makes it allocate until the process dies (an 18 KB file took
+/// 3 GB). This reader visits each node once and caps the work.
+fn macho_export_trie(m: &mach::MachO, data: &[u8], slice_offset: u64) -> Vec<(String, u64)> {
+    use mach::load_command::CommandVariant;
+    const MAX_NODES: usize = 200_000;
+    const MAX_NAME: usize = 4096;
+    let (off, size) = match m.load_commands.iter().find_map(|lc| match &lc.command {
+        CommandVariant::DyldInfo(c) | CommandVariant::DyldInfoOnly(c) => {
+            Some((c.export_off as u64, c.export_size as u64))
+        }
+        CommandVariant::DyldExportsTrie(c) => Some((c.dataoff as u64, c.datasize as u64)),
+        _ => None,
+    }) {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let start = slice_offset.saturating_add(off) as usize;
+    let Some(trie) = data.get(start..start.saturating_add(size as usize).min(data.len())) else {
+        return Vec::new();
+    };
+    fn uleb(t: &[u8], at: &mut usize) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let b = *t.get(*at)?;
+            *at += 1;
+            v |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    // Budget the whole walk, not just the node count: each node can queue up to 255 children,
+    // so also cap the queued work and the bytes of name prefixes held at once.
+    const MAX_PENDING: usize = 100_000;
+    const MAX_PREFIX_BYTES: usize = 16 << 20;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<(usize, String)> = vec![(0, String::new())];
+    let mut held = 0usize;
+    while let Some((node, prefix)) = stack.pop() {
+        held -= prefix.len();
+        if seen.len() >= MAX_NODES || !seen.insert(node) {
+            continue;
+        }
+        let mut at = node;
+        let Some(terminal) = uleb(trie, &mut at) else {
+            continue;
+        };
+        let children_at = at.saturating_add(terminal as usize);
+        if terminal > 0 {
+            let flags = uleb(trie, &mut at).unwrap_or(0);
+            // Re-exports name another dylib's symbol and carry no address of their own.
+            if flags & 0x08 == 0 {
+                if let Some(addr) = uleb(trie, &mut at) {
+                    out.push((prefix.clone(), addr));
+                }
+            }
+        }
+        let mut at = children_at;
+        let Some(&count) = trie.get(at) else { continue };
+        at += 1;
+        for _ in 0..count {
+            let Some(len) = trie.get(at..).and_then(|r| r.iter().position(|&b| b == 0)) else {
+                break;
+            };
+            let edge = String::from_utf8_lossy(&trie[at..at + len]);
+            at += len + 1;
+            let Some(child) = uleb(trie, &mut at) else {
+                break;
+            };
+            let child = child as usize;
+            let name_len = prefix.len() + edge.len();
+            if seen.contains(&child)
+                || name_len > MAX_NAME
+                || stack.len() >= MAX_PENDING
+                || held + name_len > MAX_PREFIX_BYTES
+            {
+                continue;
+            }
+            held += name_len;
+            stack.push((child, format!("{prefix}{edge}")));
+        }
+    }
+    out.sort();
+    out
+}
+
 fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) -> Binary {
     let mut sections = Vec::new();
     for seg in m.segments.iter() {
@@ -1014,9 +1387,12 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         }
     }
 
-    let imports: Vec<Import> = m
-        .imports()
-        .unwrap_or_default()
+    let goblin_imports = if macho_bind_count(m, data, slice_offset) <= MAX_MACHO_BINDS {
+        m.imports().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let imports: Vec<Import> = goblin_imports
         .into_iter()
         .map(|i| Import {
             library: Some(i.dylib.to_string()),
@@ -1027,7 +1403,9 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
 
     let mut symbols = Vec::new();
     if let Some(syms) = &m.symbols {
-        for (name, nl) in syms.iter().flatten() {
+        // nsyms comes from the file; stop at the first entry that cannot be read instead of
+        // skipping billions of failing reads (a fuzzed 16 KB file took 25 s).
+        for (name, nl) in syms.iter().take(data.len() / 12).map_while(|r| r.ok()) {
             if nl.is_stab()
                 || nl.is_undefined()
                 || nl.get_type() != mach::symbols::N_SECT
@@ -1062,19 +1440,15 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
             }
         }
     }
-    let exports: Vec<Symbol> = m
-        .exports()
-        .unwrap_or_default()
+    let text_base = m
+        .segments
+        .iter()
+        .find(|s| s.name().ok() == Some("__TEXT"))
+        .map(|s| s.vmaddr)
+        .unwrap_or(0);
+    let exports: Vec<Symbol> = macho_export_trie(m, data, slice_offset)
         .into_iter()
-        .map(|e| {
-            let base = m
-                .segments
-                .iter()
-                .find(|s| s.name().ok() == Some("__TEXT"))
-                .map(|s| s.vmaddr)
-                .unwrap_or(0);
-            sym(&e.name, base + e.offset, e.size as u64, SymKind::Func)
-        })
+        .map(|(name, off)| sym(&name, text_base.wrapping_add(off), 0, SymKind::Func))
         .collect();
 
     use mach::header::*;
@@ -1134,6 +1508,8 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         slice_size,
         function_starts: macho_function_starts(m, data),
         relocated_ptrs: Vec::new(),
+        go: None,
+        dotnet: None,
     };
     b.mitigations = crate::checksec::macho(m, &b, data);
     b

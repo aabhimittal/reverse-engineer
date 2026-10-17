@@ -8,6 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # The Go tests build Go binaries on the fly; every job that runs them installs Go, so never skip them here.
+  REX_REQUIRE_GO: "1"
 
 jobs:
   test:
@@ -21,6 +23,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # macOS runners do not ship Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
       # --no-fail-fast: report every failing test binary in one run, not just the first.
       - run: cargo test --workspace --no-fail-fast
   lint:

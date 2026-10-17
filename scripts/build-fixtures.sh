@@ -45,6 +45,13 @@ clang --target=x86_64-pc-windows-msvc -O1 -fno-stack-protector -ffreestanding -f
 lld-link /nologo /entry:start /subsystem:windows /nodefaultlib /dynamicbase /nxcompat \
       /timestamp:1700000000 /out:"$OUT/sample.exe" "$TMP/sample_win.obj" "$TMP/kernel32.lib" "$TMP/user32.lib"
 
+# Embedded manifest asking for elevation and UI access (lld-link writes the manifest itself).
+printf '__declspec(dllimport) void __stdcall ExitProcess(unsigned);\nvoid start(void){ ExitProcess(0); }\n' > "$TMP/elevated.c"
+clang --target=x86_64-pc-windows-msvc -O1 -ffreestanding -c "$TMP/elevated.c" -o "$TMP/elevated.obj"
+lld-link /nologo /entry:start /subsystem:windows /nodefaultlib /dynamicbase /nxcompat /timestamp:1700000000 \
+      /manifest:embed "/manifestuac:level='requireAdministrator' uiAccess='true'" \
+      /out:"$OUT/elevated.exe" "$TMP/elevated.obj" "$TMP/kernel32.lib"
+
 echo "[*] Mach-O (x86-64)"
 mkdir -p "$TMP/sdk/usr/lib"
 cat > "$TMP/sdk/usr/lib/libSystem.tbd" <<'TBD'

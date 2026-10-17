@@ -126,11 +126,14 @@ fn v_elf(b: &[u8]) -> Option<(Option<u64>, String)> {
         return None;
     }
     let size = goblin::elf::Elf::parse(b).ok().map(|e| {
-        let sh = e.header.e_shoff + e.header.e_shnum as u64 * e.header.e_shentsize as u64;
+        let sh = e
+            .header
+            .e_shoff
+            .saturating_add(e.header.e_shnum as u64 * e.header.e_shentsize as u64);
         let ph = e
             .program_headers
             .iter()
-            .map(|p| p.p_offset + p.p_filesz)
+            .map(|p| p.p_offset.saturating_add(p.p_filesz))
             .max()
             .unwrap_or(0);
         sh.max(ph)
@@ -540,7 +543,7 @@ pub fn extract(data: &[u8], carved: &[Carved], dir: &Path) -> std::io::Result<Ve
     for (i, c) in carved.iter().enumerate() {
         let start = c.offset as usize;
         let end = match c.size {
-            Some(s) => start + s as usize,
+            Some(s) => start.saturating_add(s as usize),
             None => carved
                 .iter()
                 .skip(i + 1)

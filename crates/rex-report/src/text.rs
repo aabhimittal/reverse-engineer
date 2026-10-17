@@ -5,10 +5,18 @@ struct Style {
     on: bool,
 }
 
+// Colour codes are written as placeholders while the report is assembled, because everything
+// else in it can come from the file under analysis: symbol names, version strings, URLs. The
+// final pass (`finish`) escapes control characters from that text and only then turns the
+// placeholders into real ANSI sequences, so a crafted string cannot clear the screen, move the
+// cursor, retitle the terminal or hide a finding.
+const OPEN: char = '\u{E000}';
+const CLOSE: char = '\u{E001}';
+
 impl Style {
     fn paint(&self, code: &str, s: &str) -> String {
         if self.on {
-            format!("\x1b[{code}m{s}\x1b[0m")
+            format!("{OPEN}{code}{CLOSE}{s}{OPEN}0{CLOSE}")
         } else {
             s.to_string()
         }
@@ -181,5 +189,42 @@ pub(crate) fn render(r: &Report, color: bool) -> String {
     for e in &r.errors {
         let _ = writeln!(o, "{}", st.paint("33", &format!("warning: {e}")));
     }
-    o
+    finish(&o, color)
+}
+
+/// Make untrusted text safe for a terminal, then apply the colour placeholders.
+fn finish(o: &str, color: bool) -> String {
+    let mut out = String::with_capacity(o.len());
+    let mut chars = o.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            OPEN => {
+                let mut code = String::new();
+                for d in chars.by_ref() {
+                    if d == CLOSE {
+                        break;
+                    }
+                    code.push(d);
+                }
+                // Only SGR colour codes we generate (digits and ';') become escape sequences.
+                if color && !code.is_empty() && code.chars().all(|d| d.is_ascii_digit() || d == ';')
+                {
+                    let _ = write!(out, "\x1b[{code}m");
+                }
+            }
+            CLOSE => {}
+            '\n' => out.push('\n'),
+            c if c.is_control() || is_bidi_control(c) => {
+                let _ = write!(out, "\\u{{{:x}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Unicode bidirectional overrides and isolates can reorder how text displays
+/// ("Trojan Source"): show them instead of obeying them.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
 }

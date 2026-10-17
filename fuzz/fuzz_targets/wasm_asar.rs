@@ -2,6 +2,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
+    rex_fuzz::only_rex_panics_are_bugs();
     if let Ok(m) = rex_binary::wasm::parse(data) {
         for i in 0..(m.imported_functions + m.defined_functions).min(64) {
             let _ = m.func_name(i as u32);
@@ -9,6 +10,7 @@ fuzz_target!(|data: &[u8]| {
                 let _ = l.render();
             }
         }
+        let _ = rex_binary::wasm_ops::call_edges(&m, data);
     }
     if let Ok(a) = rex_web::asar::parse(data) {
         for e in &a.entries {

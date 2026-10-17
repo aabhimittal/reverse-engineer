@@ -149,6 +149,9 @@ fn looks_generated(src: &str) -> bool {
         || (src.len() / lines > 400 && src.len() > 4096)
 }
 
+/// Directory entries looked at before giving up on a walk (pointing rex at `/` or `$HOME`).
+const MAX_VISITED: usize = 1_000_000;
+
 /// Walk and parse a directory (respects `.gitignore`).
 pub fn scan(root: &Path, max_files: usize) -> Project {
     let mut paths: Vec<PathBuf> = Vec::new();
@@ -158,12 +161,22 @@ pub fn scan(root: &Path, max_files: usize) -> Project {
         .git_ignore(true)
         .git_exclude(true)
         .parents(true)
+        // Stay on the starting filesystem: never wander into /proc, /sys or network mounts.
+        .same_file_system(true)
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
             !(e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&name.as_ref()))
         })
         .build();
+    // Counting every skipped file means walking the whole tree, which on `rex code map /` never
+    // ends in practice. Stop after a bounded look past the limit and report "at least N skipped".
+    let mut visited = 0usize;
     for entry in walker.flatten() {
+        visited += 1;
+        if visited > MAX_VISITED || (paths.len() >= max_files && skipped >= max_files) {
+            skipped += 1;
+            break;
+        }
         if entry.file_type().is_some_and(|t| t.is_file()) && Lang::from_path(entry.path()).is_some()
         {
             if paths.len() >= max_files {

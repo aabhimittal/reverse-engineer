@@ -391,10 +391,28 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
     let mut x = decoder_for(bin, &names_arc).expect("decoder was available above");
 
     // 6. Explore.
-    let mut queue: Vec<u64> = seeds.iter().rev().copied().collect();
+    // When --max-functions cuts discovery short, spend the budget on the code someone is most
+    // likely to look at. A priority queue orders work by (how interesting the name is, call depth
+    // from a seed): the program's own `main` and its callees come first, runtime and standard
+    // library code last. Plain depth-first order let the Go runtime (≈5,700 functions in a hello
+    // world, all at lower addresses than `main.main`) use up the whole budget.
+    let rank = |a: u64| -> u8 {
+        match names.get(&a).map(String::as_str) {
+            Some(n) if n == "main" || n == "_main" || n.starts_with("main.") => 0,
+            _ if Some(a) == prog.main => 0,
+            Some(n) if is_runtime_name(n) => 4,
+            Some(_) => 1,
+            None if a == bin.entry => 2,
+            None => 3,
+        }
+    };
+    let mut queue: std::collections::BinaryHeap<std::cmp::Reverse<(u8, u32, u64)>> = seeds
+        .iter()
+        .map(|&a| std::cmp::Reverse((rank(a), 0, a)))
+        .collect();
     let mut done: HashSet<u64> = HashSet::new();
     let known_starts: HashSet<u64> = seeds.clone().into_iter().collect();
-    while let Some(start) = queue.pop() {
+    while let Some(std::cmp::Reverse((_, depth, start))) = queue.pop() {
         if prog.functions.len() >= opts.max_functions {
             break;
         }
@@ -411,9 +429,9 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
             &prog.stubs,
             opts.max_insns_per_function,
         );
-        for &c in f.calls.iter().rev() {
+        for &c in &f.calls {
             if in_code(c) && !done.contains(&c) && !prog.stubs.contains_key(&c) {
-                queue.push(c);
+                queue.push(std::cmp::Reverse((rank(c), depth.saturating_add(1), c)));
             }
         }
         prog.functions.insert(start, f);
@@ -490,6 +508,55 @@ pub fn analyze(bin: &Binary, data: &[u8], opts: &AnalysisOptions) -> Program {
 }
 
 /// Read a pointer-sized little/big-endian value at a virtual address.
+/// Toolchain-supplied code: language runtimes, standard libraries, CRT startup.
+fn is_runtime_name(n: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "runtime.",
+        "internal/",
+        "sync.",
+        "sync/",
+        "reflect.",
+        "syscall.",
+        "unicode",
+        "strconv.",
+        "fmt.",
+        "os.",
+        "io.",
+        "io/",
+        "time.",
+        "sort.",
+        "strings.",
+        "bytes.",
+        "errors.",
+        "math.",
+        "math/",
+        "crypto/",
+        "net.",
+        "net/",
+        "encoding/",
+        "vendor/",
+        "type:",
+        "go:",
+        "type..",
+        "_rt0_",
+        "__libc_",
+        "_init",
+        "_fini",
+        "__do_global",
+        "deregister_tm",
+        "register_tm",
+        "frame_dummy",
+        "_start",
+        "std::",
+        "core::",
+        "alloc::",
+        "_ZN3std",
+        "_ZN4core",
+        "_ZN5alloc",
+    ];
+    PREFIXES.iter().any(|p| n.starts_with(p))
+}
+
 fn read_ptr(bin: &Binary, data: &[u8], va: u64) -> Option<u64> {
     if let Ok(i) = bin.relocated_ptrs.binary_search_by_key(&va, |p| p.0) {
         return Some(bin.relocated_ptrs[i].1);
