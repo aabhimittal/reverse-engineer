@@ -201,6 +201,18 @@ enum Cmd {
         #[arg(long)]
         dot: bool,
     },
+    /// Decompile a function to pseudo-C with Ghidra (optional; needs Ghidra installed).
+    Decompile {
+        path: PathBuf,
+        /// Function name or address (as in `rex functions`).
+        function: Option<String>,
+        /// Decompile every function (up to 500).
+        #[arg(long, conflicts_with = "function")]
+        all: bool,
+        /// Give up after this many seconds (Ghidra's start-up and auto-analysis included).
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
     /// Call graph (Mermaid) from main/entry or a given function.
     Callgraph {
         path: PathBuf,
@@ -520,6 +532,23 @@ fn run(cli: Cli) -> Result<i32> {
                 count,
             )?)?;
             Ok(0)
+        }
+        Cmd::Decompile {
+            path,
+            function,
+            all,
+            timeout,
+        } => {
+            let a = ctx.load(&path)?;
+            let headless = rex_engine::ghidra::locate(&|k| std::env::var(k).ok(), &setup::which);
+            ctx.emit(&[rex_engine::decompile_report(
+                &a,
+                o,
+                function.as_deref(),
+                all,
+                std::time::Duration::from_secs(timeout),
+                headless.as_deref(),
+            )?])
         }
         Cmd::Cfg {
             path,

@@ -72,7 +72,8 @@ rex functions labs/build/crackme.stripped | head
 
 Ghidra (auto-analysis + decompiler), IDA, Binary Ninja, radare2/rizin (`aaa; afl; agf`),
 Cutter. They go further than rex (decompilation, type recovery, data-flow), so use rex to
-find *where* to look, then open those addresses there.
+find *where* to look, then open those addresses there, or run `rex decompile` to get Ghidra's pseudo-C for one
+function without opening its UI ([Decompiling with Ghidra](decompiler.md)).
 
 ## Exercises
 

@@ -75,6 +75,12 @@ pub fn tools() -> Vec<Value> {
             &["path", "function"],
         ),
         tool(
+            "rex_decompile",
+            "Decompile a function to pseudo-C with Ghidra (optional: only works when Ghidra is installed; slow, as Ghidra analyses the whole file first). Use rex_disasm when this reports Ghidra missing.",
+            json!({"path": path, "function": {"type": "string", "description": "Function name or address"}}),
+            &["path", "function"],
+        ),
+        tool(
             "rex_xrefs",
             "Cross-references: callers/callees/strings of a function, or which functions reference a string or call an import.",
             json!({"path": path, "target": {"type": "string"}}),
@@ -124,7 +130,7 @@ pub static PROMPTS: &[PromptDef] = &[
         &[("path", "Path to the file")],
         "Triage `{path}` with rex, using static analysis only (never execute it).\n\
          1. Call rex_analyze on the path. Read the findings first, then packing, capabilities and strings.\n\
-         2. If it is a native binary, call rex_functions, then rex_xrefs on the most suspicious import or string, then rex_disasm on the one or two functions that matter.\n\
+         2. If it is a native binary, call rex_functions, then rex_xrefs on the most suspicious import or string, then rex_disasm on the one or two functions that matter (rex_decompile gives pseudo-C for one of them when Ghidra is installed; skip it if it reports Ghidra missing).\n\
          3. Report: what it is; what it can do (cite finding ids and ATT&CK ids); risk with justification and benign explanations; indicators (hashes, hosts, paths); and the 3 next steps a human should take.\n\
          Separate facts (from tool output) from inferences, and say what you could not determine.",
     ),
@@ -309,6 +315,19 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
                 rex_engine::cfg(&a, &opts, f, fmt).map_err(|e| e.to_string())?
             )
         }
+        "rex_decompile" => {
+            let headless =
+                rex_engine::ghidra::locate(&|k| std::env::var(k).ok(), &rex_engine::which);
+            md(&rex_engine::decompile_report(
+                &load("path")?,
+                &opts,
+                Some(s(args, "function").ok_or("missing 'function'")?),
+                false,
+                rex_engine::ghidra::DEFAULT_TIMEOUT,
+                headless.as_deref(),
+            )
+            .map_err(|e| e.to_string())?)
+        }
         "rex_xrefs" => md(&rex_engine::xrefs(
             &load("path")?,
             &opts,
@@ -378,7 +397,7 @@ pub fn handle(msg: &Value) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
                 "serverInfo": { "name": "rex", "title": "rex reverse-engineering toolkit", "version": rex_engine::rex_core::VERSION },
-                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs (binaries), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
+                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs (binaries, plus rex_decompile when Ghidra is installed), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
             }))
         }
         "ping" => Ok(json!({})),

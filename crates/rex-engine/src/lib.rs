@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod ghidra;
+
 use rex_binary::functions::{self, Program};
 use rex_binary::{Binary, carve, diff, strings};
 use rex_core::{
@@ -457,6 +459,99 @@ pub fn cfg(a: &Artifact, opts: &AnalysisOptions, function: &str, format: &str) -
     Ok(match format {
         "dot" => functions::cfg_dot(f),
         _ => functions::cfg_mermaid(f, 8),
+    })
+}
+
+/// Decompile one function (by name or address) or `all` of them with Ghidra (see [`ghidra`]).
+/// `headless` is `analyzeHeadless`, from [`ghidra::locate`]; without it this explains how to get it.
+pub fn decompile_report(
+    a: &Artifact,
+    opts: &AnalysisOptions,
+    function: Option<&str>,
+    all: bool,
+    timeout: std::time::Duration,
+    headless: Option<&Path>,
+) -> Result<Report> {
+    let start = Instant::now();
+    let headless = headless.ok_or_else(|| {
+        Error::Unsupported(
+            "decompiling needs Ghidra: install it, then set GHIDRA_INSTALL_DIR (or REX_GHIDRA) or \
+             put analyzeHeadless on PATH; `rex doctor` shows what rex found"
+                .into(),
+        )
+    })?;
+    let (b, p) = program(a, opts)?;
+    let targets = match (function, all) {
+        (Some(f), _) => vec![
+            p.find(f)
+                .ok_or_else(|| Error::Other(format!("no function '{f}' (try `rex functions`)")))?
+                .addr,
+        ],
+        (None, true) => Vec::new(),
+        (None, false) => {
+            return Err(Error::Other(
+                "name a function (or address), or pass --all".into(),
+            ));
+        }
+    };
+    let out = ghidra::run(&ghidra::Request {
+        headless,
+        file_name: a.name(),
+        data: a.data(),
+        image_base: b.image_base,
+        targets: &targets,
+        timeout,
+    })?;
+    let mut rep = new_report(format!("rex decompile: {}", a.name()), a);
+    let ok = out.iter().filter(|d| d.c.is_some()).count();
+    rep.push(
+        Section::kv(
+            "decompile.summary",
+            "Summary",
+            [
+                (
+                    "Decompiler".to_string(),
+                    format!("Ghidra ({})", headless.display()),
+                ),
+                ("Functions".to_string(), ok.to_string()),
+                ("Failed".to_string(), (out.len() - ok).to_string()),
+            ],
+        )
+        .with_data(&out),
+    );
+    for d in &out {
+        // Prefer rex's name: it knows PLT stubs and inferred `main` in stripped binaries.
+        let name = p
+            .functions
+            .get(&d.entry)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| d.name.clone());
+        let title = format!("{name} @ {}", hex(d.entry));
+        let id = format!("decompile.{:x}", d.entry);
+        rep.push(match (&d.c, &d.error) {
+            (Some(c), _) => Section::code(id, title, "c", c.trim_end()),
+            (None, e) => Section::text(id, title, e.clone().unwrap_or_default()),
+        });
+    }
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
+/// Find an executable on `PATH` (honouring `PATHEXT` on Windows).
+pub fn which(name: &str) -> Option<std::path::PathBuf> {
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or(".EXE;.CMD;.BAT".into())
+            .split(';')
+            .map(str::to_string)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
+        exts.iter()
+            .map(|e| dir.join(format!("{name}{e}")))
+            .find(|p| p.is_file())
     })
 }
 
@@ -978,8 +1073,8 @@ pub fn doctor_report(find: &dyn Fn(&str) -> Option<std::path::PathBuf>) -> Repor
     const TOOLS: &[(&str, &[&str], &str)] = &[
         (
             "Ghidra",
-            &["ghidraRun", "analyzeHeadless"],
-            "decompiler: open the addresses from `rex functions`",
+            &["analyzeHeadless", "ghidraRun"],
+            "`rex decompile FILE FUNC` (set GHIDRA_INSTALL_DIR if analyzeHeadless is not on PATH)",
         ),
         (
             "radare2 / rizin",
@@ -1027,7 +1122,11 @@ pub fn doctor_report(find: &dyn Fn(&str) -> Option<std::path::PathBuf>) -> Repor
     let rows = TOOLS
         .iter()
         .map(|(name, exes, why)| {
-            let found = exes.iter().find_map(|e| find(e));
+            let found = if *name == "Ghidra" {
+                ghidra::locate(&|k| std::env::var(k).ok(), find)
+            } else {
+                exes.iter().find_map(|e| find(e))
+            };
             vec![
                 name.to_string(),
                 found

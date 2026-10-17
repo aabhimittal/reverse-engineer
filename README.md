@@ -131,14 +131,14 @@ make -C labs && mdbook serve docs
 
 | | rex | Ghidra / IDA / Binary Ninja | radare2 | binwalk / unblob | mitmproxy2swagger |
 |---|---|---|---|---|---|
-| Decompiler | no | **yes** | partial | no | n/a |
+| Decompiler | via Ghidra, if installed (`rex decompile`) | **yes** | partial | no | n/a |
 | Interactive debugging | no | partial | **yes** | no | n/a |
 | Binaries + firmware + APK + Electron + WASM + HAR + JS + source trees in one tool | **yes** | no | no | no | no |
 | Machine-readable findings, SARIF, CI gating | **yes** | no | no | no | no |
 | Single static binary, instant start | **yes** | no | yes | no | no |
 | MCP server for agents | **yes** | via plugins | via plugins | no | no |
 
-`rex` is **not** a decompiler or debugger and doesn't try to be. Use it to decide where to point those.
+`rex` has no decompiler or debugger of its own. Use it to decide where to point those; with Ghidra installed, `rex decompile FILE FUNC` hands a function to Ghidra's decompiler and returns the pseudo-C.
 
 ## Honest limitations
 

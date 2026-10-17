@@ -92,23 +92,8 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Find an executable on `PATH` (honouring `PATHEXT` on Windows).
-pub fn which(name: &str) -> Option<PathBuf> {
-    let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or(".EXE;.CMD;.BAT".into())
-            .split(';')
-            .map(str::to_string)
-            .collect()
-    } else {
-        vec![String::new()]
-    };
-    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
-        exts.iter()
-            .map(|e| dir.join(format!("{name}{e}")))
-            .find(|p| p.is_file())
-    })
-}
+/// Find an executable on `PATH`.
+pub use rex_engine::which;
 
 fn json_config_path(agent: Agent, home: &Path) -> Option<PathBuf> {
     Some(match agent {

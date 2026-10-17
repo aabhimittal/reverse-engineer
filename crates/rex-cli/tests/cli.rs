@@ -452,3 +452,47 @@ fn compare_reports_gates_on_regressions() {
     let e = rex().arg("compare").arg(&junk).arg(&good).output().unwrap();
     assert_eq!(e.status.code(), Some(1));
 }
+
+#[cfg(unix)]
+#[test]
+fn decompile_runs_ghidra_headless_and_explains_when_it_is_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    // A stand-in analyzeHeadless that answers for whatever address it is asked about.
+    let stub = d.path().join("analyzeHeadless");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = RexDecompile.java ]; then out=$2; addr=$5; fi\n  shift\ndone\n\
+         printf '[{\"name\":\"FUN_%s\",\"entry\":%d,\"c\":\"int check_password(char *p)\\\\n{\\\\n  return strlen(p) == 8;\\\\n}\",\"error\":null}]' \"$addr\" \"$((0x$addr))\" > \"$out\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = stdout(
+        rex()
+            .env("REX_GHIDRA", &stub)
+            .args(["decompile"])
+            .arg(fx("crackme.elf"))
+            .arg("check_password"),
+    );
+    // rex's name for the function wins over Ghidra's FUN_ name.
+    assert!(
+        out.contains("check_password @ 0x") && out.contains("strlen(p)"),
+        "{out}"
+    );
+
+    let missing = rex()
+        .env_remove("REX_GHIDRA")
+        .env_remove("GHIDRA_INSTALL_DIR")
+        .env("PATH", d.path().join("empty"))
+        .args(["decompile"])
+        .arg(fx("crackme.elf"))
+        .arg("check_password")
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    let err = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        err.contains("needs Ghidra") && err.contains("rex doctor"),
+        "{err}"
+    );
+}

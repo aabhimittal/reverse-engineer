@@ -15,6 +15,7 @@
 - [Executable formats: ELF, PE, Mach-O](binary/formats.md)
 - [x86-64 assembly for reversers](binary/x86-64.md)
 - [Static analysis: functions, CFGs, xrefs](binary/static-analysis.md)
+- [Decompiling with Ghidra (optional)](binary/decompiler.md)
 - [Dynamic analysis](binary/dynamic-analysis.md)
 - [Exploit mitigations (checksec)](binary/mitigations.md)
 - [Packers and obfuscation](binary/packers.md)

@@ -34,4 +34,5 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - Go: build info (version, modules, dependencies, build settings) and function names from the pclntab in stripped binaries on every Go target; libc hardening findings marked not applicable; discovery spends the `--max-functions` budget on `main` and its callees first.
 - .NET: CLI metadata reader (assembly, referenced assemblies, types, methods, string literals, P/Invoke imports, which also feed the capability rules).
 - PE: version-info strings, and manifest `requestedExecutionLevel` / `uiAccess` findings.
+- `rex decompile FILE FUNC|--all`: optional Ghidra bridge that runs `analyzeHeadless` with a bundled post-script and returns pseudo-C named the way rex names functions; found via `GHIDRA_INSTALL_DIR`, `REX_GHIDRA` or `PATH` (shown by `rex doctor`); whole-run `--timeout`; MCP tool `rex_decompile`. A CI job tests it against a pinned Ghidra release.
 - `rex compare old.json new.json`: what changed between two saved reports; new or escalated findings honour `--fail-on`.

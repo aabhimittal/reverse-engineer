@@ -21,7 +21,8 @@ builds from source instead.
 Those are deeper. rex is the triage layer in front of them. It answers *what is this, what can it do, what is
 risky, where do I look* across binaries, firmware, APKs, WebAssembly, Electron apps, HAR captures and source trees,
 in seconds, with output a machine can consume. When it points you at a function, you open Ghidra on that
-function. It is not a decompiler and not a debugger.
+function, or let `rex decompile` do it for you when Ghidra is installed. rex itself is not a decompiler and not a
+debugger.
 
 **Which architectures get full analysis?**
 Function discovery, control-flow graphs, call graphs and function-level diffing work for x86, x86-64, AArch64 and
@@ -35,8 +36,9 @@ rest by name, even where no CFG is built.
 
 **How is rex different from tools that drive Ghidra or IDA?**
 rex does its own parsing, disassembly and control-flow recovery in one static binary, so it runs in CI, in a container
-or behind an MCP server with nothing else installed. It does not decompile to C; when you need pseudocode, open the
-binary in Ghidra with the addresses rex gives you.
+or behind an MCP server with nothing else installed. It does not decompile to C by itself; when you need pseudocode
+and have Ghidra installed, `rex decompile FILE FUNC` runs Ghidra headless on that function (see
+[Decompiling with Ghidra](binary/decompiler.md)).
 
 **Can I trust the findings?**
 Treat them as leads. Rules fire on evidence they print (imports, strings, flag values), and every heuristic can be
