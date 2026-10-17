@@ -82,7 +82,12 @@ pub struct Request<'a> {
 /// Run Ghidra and collect its output.
 pub fn run(req: &Request) -> Result<Vec<Decompiled>> {
     let io = |what: &str, e: std::io::Error| Error::Other(format!("ghidra: {what}: {e}"));
-    let dir = tempfile::tempdir().map_err(|e| io("temporary directory", e))?;
+    // Ghidra rejects project paths with an element starting with '.', which is what tempfile
+    // names its directories by default (`.tmpXXXX`).
+    let dir = tempfile::Builder::new()
+        .prefix("rex-ghidra-")
+        .tempdir()
+        .map_err(|e| io("temporary directory", e))?;
     let input_dir = dir.path().join("input");
     let project = dir.path().join("project");
     for d in [&input_dir, &project] {
@@ -236,6 +241,9 @@ mod tests {
             "{args}"
         );
         assert!(args.contains("a_b_c.elf"), "{args}");
+        // Ghidra refuses project paths with an element starting with '.'.
+        let project = args.split_whitespace().next().unwrap();
+        assert!(!project.contains("/."), "{project}");
         let all = run(&req(&h, &[], Duration::from_secs(30)));
         assert!(all.is_ok());
         assert!(
