@@ -1213,22 +1213,23 @@ fn macho_bind_count(m: &mach::MachO, data: &[u8], slice_offset: u64) -> u64 {
         }
         v
     };
+    // Mirror goblin: only opcode *starts* are bounded by the stream; operands are read from the
+    // whole slice, so a ULEB count that straddles the stream end is still read in full.
+    let d = data.get(slice_offset as usize..).unwrap_or_default();
     let mut total = 0u64;
     for (off, size) in [
         (info.bind_off, info.bind_size),
         (info.weak_bind_off, info.weak_bind_size),
         (info.lazy_bind_off, info.lazy_bind_size),
     ] {
-        let start = slice_offset.saturating_add(off as u64) as usize;
-        let Some(d) = data.get(start..start.saturating_add(size as usize).min(data.len())) else {
-            continue;
-        };
-        let mut at = 0;
-        while at < d.len() {
+        let mut at = off as usize;
+        let end = at.saturating_add(size as usize).min(d.len());
+        while at < end {
             let op = d[at] & 0xf0;
             at += 1;
             match op {
-                0x20 | 0x60 | 0x70 | 0x80 => {
+                // ULEB or SLEB operand; skipping its bytes is the same either way.
+                0x20 | 0x50 | 0x60 | 0x70 | 0x80 => {
                     uleb(d, &mut at);
                 }
                 0x40 => {
