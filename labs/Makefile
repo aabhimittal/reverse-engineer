@@ -4,8 +4,8 @@
 CC ?= cc
 OUT := build
 
-.PHONY: all clean all-formats firmware
-all: $(OUT)/crackme $(OUT)/crackme.stripped $(OUT)/vuln firmware
+.PHONY: all clean all-formats firmware crash
+all: $(OUT)/crackme $(OUT)/crackme.stripped $(OUT)/vuln firmware crash
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -21,6 +21,9 @@ $(OUT)/vuln: binary/02-vuln/vuln.c | $(OUT)
 
 firmware: | $(OUT)
 	python3 firmware/make_firmware.py $(OUT)/firmware.bin
+
+crash:
+	python3 crash/make_core.py crash
 
 all-formats: all
 	../scripts/build-fixtures.sh $(OUT)

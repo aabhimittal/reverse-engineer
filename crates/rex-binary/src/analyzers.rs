@@ -11,6 +11,22 @@ fn native(a: &Artifact) -> bool {
     a.kind().is_native_binary()
 }
 
+/// An ELF core dump (`e_type == ET_CORE`), judged from the header alone.
+pub fn is_core(a: &Artifact) -> bool {
+    let d = a.data();
+    let e_type = match d.get(5) {
+        Some(1) => d.get(16..18).map(|b| u16::from_le_bytes([b[0], b[1]])),
+        Some(2) => d.get(16..18).map(|b| u16::from_be_bytes([b[0], b[1]])),
+        _ => None,
+    };
+    a.kind() == ArtifactKind::Elf && e_type == Some(goblin::elf::header::ET_CORE)
+}
+
+/// A native executable, library or object: what code-level analyzers apply to (not a core).
+fn native_code(a: &Artifact) -> bool {
+    native(a) && !is_core(a)
+}
+
 fn hex(v: u64) -> String {
     format!("{v:#x}")
 }
@@ -26,7 +42,8 @@ pub fn register(r: &mut Registry) {
         .register(Functions)
         .register(Entropy)
         .register(Carve)
-        .register(Wasm);
+        .register(Wasm)
+        .register(Core);
     #[cfg(feature = "yara")]
     r.register(Yara);
 }
@@ -113,6 +130,9 @@ impl Analyzer for Info {
                 .describe("Windows shows a UAC prompt and runs the program as administrator.")
                 .evidence(format!("requestedExecutionLevel level=\"{l}\"")),
             );
+        }
+        if let Some(f) = crate::relocs::textrel_finding(&b) {
+            out.finding(f);
         }
         if extra("Manifest: uiAccess") == Some("true") {
             out.finding(
@@ -307,7 +327,7 @@ impl Analyzer for Info {
                     .at(Location { offset: Some(o), ..Default::default() }),
             );
         }
-        if b.stripped && b.format != crate::model::BinFormat::Pe {
+        if b.stripped && b.format != crate::model::BinFormat::Pe && b.core.is_none() {
             out.finding(Finding::new("BIN-STRIPPED", Severity::Info, "structure", "Symbols are stripped").describe(
                 "No local symbol table. rex will still recover functions by following control flow from the entry point.",
             ));
@@ -371,7 +391,7 @@ impl Analyzer for Checksec {
         "Exploit mitigations: NX, PIE/ASLR, RELRO, canaries, FORTIFY, CFG, CET, signing"
     }
     fn supports(&self, a: &Artifact) -> bool {
-        native(a)
+        native_code(a)
     }
     fn priority(&self) -> i32 {
         20
@@ -483,7 +503,7 @@ impl Analyzer for Packer {
         "Packer/protector signatures and entropy-based packing heuristics"
     }
     fn supports(&self, a: &Artifact) -> bool {
-        native(a)
+        native_code(a)
     }
     fn priority(&self) -> i32 {
         25
@@ -543,7 +563,7 @@ impl Analyzer for Capabilities {
         "Behavioural capabilities from imports, strings and constants, mapped to MITRE ATT&CK"
     }
     fn supports(&self, a: &Artifact) -> bool {
-        native(a) || matches!(a.kind(), ArtifactKind::Blob | ArtifactKind::Wasm)
+        native_code(a) || matches!(a.kind(), ArtifactKind::Blob | ArtifactKind::Wasm)
     }
     fn priority(&self) -> i32 {
         30
@@ -801,7 +821,7 @@ impl Analyzer for Functions {
         "Recursive-descent function discovery, CFGs, call graph, xrefs and unsafe-API usage (x86/x64)"
     }
     fn supports(&self, a: &Artifact) -> bool {
-        native(a)
+        native_code(a)
     }
     fn priority(&self) -> i32 {
         50
@@ -1083,6 +1103,7 @@ impl Analyzer for Carve {
     }
     fn supports(&self, a: &Artifact) -> bool {
         a.kind() == ArtifactKind::Blob
+            || is_core(a)
             || (native(a) && Binary::of(a).ok().and_then(|b| b.overlay_offset).is_some())
     }
     fn priority(&self) -> i32 {
@@ -1387,6 +1408,249 @@ impl Analyzer for Wasm {
                 )
                 .describe("DWARF sections or a sourceMappingURL make reversing much easier and can leak build paths.")
                 .evidence_all(m.custom.iter().filter(|c| c.starts_with(".debug_") || *c == "sourceMappingURL" || *c == "external_debug_info").cloned()),
+            );
+        }
+        Ok(out)
+    }
+}
+
+// ───────────────────────────── core dumps ─────────────────────────────
+
+/// Crash triage for ELF core dumps.
+pub struct Core;
+
+impl Analyzer for Core {
+    fn name(&self) -> &'static str {
+        "binary.core"
+    }
+    fn description(&self) -> &'static str {
+        "Core-dump triage: signal, fault address, threads, mappings and code pointers on the stack"
+    }
+    fn supports(&self, a: &Artifact) -> bool {
+        is_core(a)
+    }
+    fn priority(&self) -> i32 {
+        12
+    }
+    fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
+        use crate::core::{si_code_meaning, signal_meaning};
+        let b = Binary::of(a)?;
+        let mut out = AnalyzerOutput::new();
+        let Some(c) = &b.core else {
+            return Ok(out);
+        };
+        let at = |v: u64| match c.symbolize(v) {
+            Some(s) => format!("{v:#x} ({s})"),
+            None => hex(v),
+        };
+        let crash = c.crashing_thread();
+        let pc = crash.and_then(|t| t.pc);
+        let sp = crash.and_then(|t| t.sp);
+
+        let mut kv: Vec<(String, String)> = Vec::new();
+        let signal = match (c.signal_name.as_str(), signal_meaning(c.signal)) {
+            _ if c.signal == 0 => "none recorded".to_string(),
+            ("", _) => c.signal.to_string(),
+            (n, "") => format!("{n} ({})", c.signal),
+            (n, m) => format!("{n} ({}) — {m}", c.signal),
+        };
+        kv.push(("Signal".into(), signal));
+        if let Some(code) = c.si_code {
+            let m = si_code_meaning(c.signal, code);
+            kv.push((
+                "si_code".into(),
+                if m.is_empty() {
+                    code.to_string()
+                } else {
+                    format!("{code} ({m})")
+                },
+            ));
+        }
+        if let Some(f) = c.fault_addr {
+            kv.push(("Fault address".into(), at(f)));
+        }
+        if let Some(p) = c.pid {
+            kv.push(("PID".into(), p.to_string()));
+        }
+        if let Some(t) = crash {
+            kv.push(("Crashing thread".into(), t.tid.to_string()));
+        }
+        if let Some(p) = pc {
+            kv.push(("PC".into(), at(p)));
+        }
+        if let Some(s) = sp {
+            kv.push(("SP".into(), hex(s)));
+        }
+        if let Some(e) = c.executable() {
+            kv.push(("Executable".into(), e.to_string()));
+        }
+        if let Some(args) = &c.args {
+            kv.push(("Command line".into(), args.clone()));
+        }
+        if let Some(e) = c.auxv.entry {
+            kv.push(("Entry (AT_ENTRY)".into(), at(e)));
+        }
+        if let Some(p) = c.auxv.page_size {
+            kv.push(("Page size".into(), p.to_string()));
+        }
+        if let Some(h) = c.auxv.hwcap {
+            kv.push(("AT_HWCAP".into(), hex(h)));
+        }
+        kv.push(("Threads".into(), c.threads.len().to_string()));
+        kv.push(("Mapped files".into(), c.mappings.len().to_string()));
+        out.section(Section::kv("binary.core", "Crash summary", kv).with_data(c));
+
+        let rows = c
+            .threads
+            .iter()
+            .map(|t| {
+                vec![
+                    t.tid.to_string(),
+                    match crate::core::signal_name(t.signal) {
+                        _ if t.signal == 0 => "-".to_string(),
+                        "" => t.signal.to_string(),
+                        n => n.to_string(),
+                    },
+                    t.pc.map(hex).unwrap_or_default(),
+                    t.pc.and_then(|p| c.symbolize(p)).unwrap_or_default(),
+                    t.sp.map(hex).unwrap_or_default(),
+                ]
+            })
+            .collect();
+        out.section(Section::table(
+            "binary.core.threads",
+            format!("Threads ({})", c.threads.len()),
+            &["tid", "signal", "pc", "location", "sp"],
+            rows,
+            opts.max_rows,
+        ));
+
+        if !c.mappings.is_empty() {
+            let rows = c
+                .mappings
+                .iter()
+                .map(|m| {
+                    let perms = c
+                        .segments
+                        .iter()
+                        .find(|s| m.start >= s.vaddr && m.start - s.vaddr < s.memsz)
+                        .map(|s| {
+                            format!(
+                                "r{}{}",
+                                if s.write { 'w' } else { '-' },
+                                if s.exec { 'x' } else { '-' }
+                            )
+                        })
+                        .unwrap_or_default();
+                    vec![
+                        hex(m.start),
+                        hex(m.end),
+                        hex(m.file_offset),
+                        perms,
+                        m.path.clone(),
+                    ]
+                })
+                .collect();
+            out.section(Section::table(
+                "binary.core.mappings",
+                format!("Mapped files ({})", c.mappings.len()),
+                &["start", "end", "file offset", "perms", "path"],
+                rows,
+                opts.max_rows,
+            ));
+        }
+
+        // Words on the stack that point into executable memory: likely return addresses, but this
+        // is a scan, not an unwind, so stale frames and function pointers show up too.
+        if let Some(sp) = sp {
+            let w = u64::from(b.bits / 8);
+            let rows: Vec<Vec<String>> = (0..64u64)
+                .map_while(|i| {
+                    let addr = sp.checked_add(i * w)?;
+                    crate::core::read_word(c, a.data(), addr, b.bits == 64, b.little_endian)
+                        .map(|v| (addr, v))
+                })
+                .filter(|&(_, v)| c.is_exec(v))
+                .map(|(addr, v)| {
+                    vec![
+                        format!("sp+{:#x}", addr - sp),
+                        hex(v),
+                        c.symbolize(v).unwrap_or_else(|| "(anonymous)".into()),
+                    ]
+                })
+                .collect();
+            if !rows.is_empty() {
+                out.section(Section::table(
+                    "binary.core.stack",
+                    "Code pointers on the stack (a scan of 64 words at SP, not an unwind)",
+                    &["slot", "value", "location"],
+                    rows,
+                    0,
+                ));
+            }
+        }
+
+        if c.signal != 0 {
+            let hijack = pc.is_some_and(|p| !c.is_exec(p));
+            let (sev, why) = if hijack {
+                (
+                    Severity::High,
+                    " The pc is outside every executable mapping: execution jumped to data or an unmapped address (possible control-flow hijack).",
+                )
+            } else if c.signal == 11 && pc.is_some() && c.fault_addr == pc {
+                (
+                    Severity::High,
+                    " The faulting address is the pc itself: the CPU tried to fetch an instruction from a bad address (possible control-flow hijack).",
+                )
+            } else if matches!(c.signal, 5 | 6) {
+                (Severity::Low, "")
+            } else {
+                (Severity::Medium, "")
+            };
+            let mut ev = vec![format!("signal {} ({})", c.signal_name, c.signal)];
+            if let Some(p) = pc {
+                ev.push(format!("pc {}", at(p)));
+            }
+            if let Some(f) = c.fault_addr {
+                ev.push(format!("fault address {}", at(f)));
+            }
+            let name = if c.signal_name.is_empty() {
+                c.signal.to_string()
+            } else {
+                c.signal_name.clone()
+            };
+            let mut f = Finding::new(
+                "BIN-CORE-CRASH",
+                sev,
+                "crash",
+                format!("{} crashed with {name}", c.executable().unwrap_or("Process")),
+            )
+            .describe(format!(
+                "{}.{why} Disassemble the executable at the pc's offset (`rex disasm --addr`) and check the stack scan for the calling code.",
+                match signal_meaning(c.signal) {
+                    "" => "Killed by a signal".to_string(),
+                    m => m[..1].to_uppercase() + &m[1..],
+                }
+            ))
+            .evidence_all(ev);
+            if let Some(p) = pc {
+                f = f.at(Location {
+                    address: Some(p),
+                    ..Default::default()
+                });
+            }
+            out.finding(f);
+        }
+        if let Some(addr) = c.fault_addr.filter(|&f| c.signal == 11 && f < 0x1000) {
+            out.finding(
+                Finding::new(
+                    "BIN-CORE-NULL-DEREF",
+                    Severity::Low,
+                    "crash",
+                    "NULL pointer dereference",
+                )
+                .describe("The fault address is in the first page, which is never mapped: a NULL pointer (or NULL plus a field offset) was dereferenced.")
+                .evidence(format!("fault address {addr:#x}")),
             );
         }
         Ok(out)

@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod ghidra;
+
 use rex_binary::functions::{self, Program};
 use rex_binary::{Binary, carve, diff, strings};
 use rex_core::{
@@ -53,6 +55,17 @@ fn native(a: &Artifact) -> Result<Binary> {
     Ok(Binary::of(a)?.as_ref().clone())
 }
 
+/// A native binary with code to analyse: cores hold a crashed process's memory, not a program.
+fn native_code(a: &Artifact) -> Result<Binary> {
+    let b = native(a)?;
+    if b.core.is_some() {
+        return Err(Error::Unsupported(
+            "core dump: use `rex core` or `rex analyze`".into(),
+        ));
+    }
+    Ok(b)
+}
+
 fn new_report(title: String, a: &Artifact) -> Report {
     Report::new(title, ArtifactSummary::of(a))
 }
@@ -77,7 +90,7 @@ pub fn function_listing(p: &Program, f: &functions::Function) -> String {
 
 /// Recover the program (functions, CFGs) for a native binary.
 pub fn program(a: &Artifact, opts: &AnalysisOptions) -> Result<(Binary, Program)> {
-    let b = native(a)?;
+    let b = native_code(a)?;
     let p = functions::analyze(&b, a.data(), opts);
     Ok((b, p))
 }
@@ -91,7 +104,7 @@ pub fn checksec_many(arts: &[Artifact]) -> Report {
     let mut errors = Vec::new();
     let mut findings = Vec::new();
     for a in arts {
-        match native(a) {
+        match native_code(a) {
             Ok(b) => {
                 let fmt = b.format.as_str().to_string();
                 let idx = match groups.iter().position(|g| g.0 == fmt) {
@@ -163,6 +176,19 @@ pub fn checksec_many(arts: &[Artifact]) -> Report {
     rep.sort_findings();
     rep.duration_ms = start.elapsed().as_millis() as u64;
     rep
+}
+
+/// Crash triage of an ELF core dump (the `binary.core` analyzer on its own).
+pub fn core_report(a: &Artifact, opts: &AnalysisOptions) -> Result<Report> {
+    if native(a)?.core.is_none() {
+        return Err(Error::Unsupported(format!(
+            "{} is not a core dump (ELF ET_CORE)",
+            a.name()
+        )));
+    }
+    let mut rep = analyze(a, opts, &["binary.core".into()]);
+    rep.title = format!("rex core: {}", a.name());
+    Ok(rep)
 }
 
 /// Strings with optional category filter.
@@ -284,6 +310,149 @@ fn program_summary(p: &Program) -> serde_json::Value {
     })
 }
 
+/// Rows shown in the relocation table (the JSON data has every entry).
+const RELOC_ROWS: usize = 20_000;
+
+/// ELF dynamic relocations, or with `got`, each GOT slot: what the loader writes there, the PLT
+/// stub that jumps through it, and whether RELRO makes it read-only afterwards.
+pub fn relocs_report(a: &Artifact, opts: &AnalysisOptions, got: bool) -> Result<Report> {
+    let start = Instant::now();
+    let b = native(a)?;
+    if b.format != rex_binary::model::BinFormat::Elf {
+        return Err(Error::Unsupported(format!(
+            "relocations are read from ELF files; {} is {:?}",
+            a.name(),
+            b.format
+        )));
+    }
+    let mut rep = new_report(
+        format!(
+            "rex relocs{}: {}",
+            if got { " --got" } else { "" },
+            a.name()
+        ),
+        a,
+    );
+    let mut summary: Vec<(String, String)> = Vec::new();
+    let mut by_type: Vec<(&str, usize)> = Vec::new();
+    for r in &b.relocs {
+        match by_type.iter_mut().find(|c| c.0 == r.kind_name) {
+            Some(c) => c.1 += 1,
+            None => by_type.push((&r.kind_name, 1)),
+        }
+    }
+    by_type.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(y.0)));
+    summary.push(("Relocations".into(), b.relocs.len().to_string()));
+    for (k, v) in b
+        .extras
+        .iter()
+        .filter(|(k, _)| k == "Relocations" || k == "TEXTREL")
+    {
+        summary.push((
+            if k == "Relocations" { "Tables" } else { k }.to_string(),
+            v.clone(),
+        ));
+    }
+    for (t, n) in by_type.iter().take(8) {
+        summary.push((t.to_string(), n.to_string()));
+    }
+    if let Some(m) = b.mitigations.iter().find(|m| m.name == "RELRO") {
+        summary.push(("RELRO".into(), m.detail.clone()));
+    }
+    rep.push(Section::kv("relocs.summary", "Summary", summary));
+    rep.findings.extend(rex_binary::relocs::textrel_finding(&b));
+    if got {
+        // Who uses each slot: the PLT stub named after the slot's import, or the function a
+        // RELATIVE slot points at.
+        let p = functions::analyze(&b, a.data(), opts);
+        let stub_of: std::collections::HashMap<&str, u64> = p
+            .stubs
+            .iter()
+            .map(|(&addr, n)| (n.as_str(), addr))
+            .collect();
+        let rows: Vec<Vec<String>> = b
+            .relocs
+            .iter()
+            .filter(|r| {
+                r.section.as_deref().is_some_and(|s| s.starts_with(".got"))
+                    || r.kind_name.contains("JUMP_SLOT")
+                    || r.kind_name.contains("JMP_SLOT")
+                    || r.kind_name.contains("GLOB_DAT")
+            })
+            .map(|r| {
+                let target = match (&r.symbol, r.addend) {
+                    (Some(s), _) => s.clone(),
+                    // On 32-bit ARM a Thumb code pointer is its address | 1.
+                    (None, Some(v)) => match p.names.get(&(v as u64)).or_else(|| {
+                        (b.arch == rex_binary::model::Arch::Arm)
+                            .then(|| p.names.get(&(v as u64 & !1)))
+                            .flatten()
+                    }) {
+                        Some(n) => format!("{} ({n})", hex(v as u64)),
+                        None => hex(v as u64),
+                    },
+                    (None, None) => String::new(),
+                };
+                let stub = r
+                    .symbol
+                    .as_deref()
+                    .and_then(|s| stub_of.get(s))
+                    .map(|&a| format!("{} ({}@plt)", hex(a), r.symbol.as_deref().unwrap_or("")))
+                    .unwrap_or_default();
+                vec![
+                    hex(r.offset),
+                    r.section.clone().unwrap_or_default(),
+                    r.kind_name.clone(),
+                    target,
+                    stub,
+                    if r.relro { "read-only" } else { "writable" }.into(),
+                ]
+            })
+            .collect();
+        rep.push(Section::table(
+            "relocs.got",
+            "GOT slots",
+            &[
+                "slot",
+                "section",
+                "type",
+                "target",
+                "PLT stub",
+                "after load",
+            ],
+            rows,
+            RELOC_ROWS,
+        ));
+    } else {
+        let rows: Vec<Vec<String>> = b
+            .relocs
+            .iter()
+            .map(|r| {
+                vec![
+                    hex(r.offset),
+                    r.kind_name.clone(),
+                    r.symbol.clone().unwrap_or_default(),
+                    r.addend.map(|v| format!("{v:#x}")).unwrap_or_default(),
+                    r.section.clone().unwrap_or_default(),
+                    r.table.into(),
+                ]
+            })
+            .collect();
+        rep.push(
+            Section::table(
+                "relocs.table",
+                "Relocations",
+                &["offset", "type", "symbol", "addend", "section", "table"],
+                rows,
+                RELOC_ROWS,
+            )
+            .with_data(&b.relocs),
+        );
+    }
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
 /// Disassemble a function (by name/address) or a raw range.
 pub fn disasm(
     a: &Artifact,
@@ -327,8 +496,12 @@ pub fn disasm(
         .bytes_at(a.data(), start)
         .ok_or_else(|| Error::Other(format!("{start:#x} is not in a mapped section")))?;
     let names = rex_binary::disasm::Names(std::sync::Arc::new(p.names.clone()));
-    let mut x = rex_binary::disasm::decoder_for(&b, &names)
+    let mut x = rex_binary::disasm::decoder_for(&b, a.data(), &names)
         .ok_or_else(|| Error::Unsupported(format!("{} control-flow analysis", b.arch.name())))?;
+    // Thumb functions found by discovery (stripped binaries have no mapping symbols to say so).
+    for &t in &p.thumb {
+        x.code_addr(t | 1);
+    }
     let insns = x.linear(bytes, start, count);
     let comments = insns
         .iter()
@@ -457,6 +630,99 @@ pub fn cfg(a: &Artifact, opts: &AnalysisOptions, function: &str, format: &str) -
     Ok(match format {
         "dot" => functions::cfg_dot(f),
         _ => functions::cfg_mermaid(f, 8),
+    })
+}
+
+/// Decompile one function (by name or address) or `all` of them with Ghidra (see [`ghidra`]).
+/// `headless` is `analyzeHeadless`, from [`ghidra::locate`]; without it this explains how to get it.
+pub fn decompile_report(
+    a: &Artifact,
+    opts: &AnalysisOptions,
+    function: Option<&str>,
+    all: bool,
+    timeout: std::time::Duration,
+    headless: Option<&Path>,
+) -> Result<Report> {
+    let start = Instant::now();
+    let headless = headless.ok_or_else(|| {
+        Error::Unsupported(
+            "decompiling needs Ghidra: install it, then set GHIDRA_INSTALL_DIR (or REX_GHIDRA) or \
+             put analyzeHeadless on PATH; `rex doctor` shows what rex found"
+                .into(),
+        )
+    })?;
+    let (b, p) = program(a, opts)?;
+    let targets = match (function, all) {
+        (Some(f), _) => vec![
+            p.find(f)
+                .ok_or_else(|| Error::Other(format!("no function '{f}' (try `rex functions`)")))?
+                .addr,
+        ],
+        (None, true) => Vec::new(),
+        (None, false) => {
+            return Err(Error::Other(
+                "name a function (or address), or pass --all".into(),
+            ));
+        }
+    };
+    let out = ghidra::run(&ghidra::Request {
+        headless,
+        file_name: a.name(),
+        data: a.data(),
+        image_base: b.image_base,
+        targets: &targets,
+        timeout,
+    })?;
+    let mut rep = new_report(format!("rex decompile: {}", a.name()), a);
+    let ok = out.iter().filter(|d| d.c.is_some()).count();
+    rep.push(
+        Section::kv(
+            "decompile.summary",
+            "Summary",
+            [
+                (
+                    "Decompiler".to_string(),
+                    format!("Ghidra ({})", headless.display()),
+                ),
+                ("Functions".to_string(), ok.to_string()),
+                ("Failed".to_string(), (out.len() - ok).to_string()),
+            ],
+        )
+        .with_data(&out),
+    );
+    for d in &out {
+        // Prefer rex's name: it knows PLT stubs and inferred `main` in stripped binaries.
+        let name = p
+            .functions
+            .get(&d.entry)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| d.name.clone());
+        let title = format!("{name} @ {}", hex(d.entry));
+        let id = format!("decompile.{:x}", d.entry);
+        rep.push(match (&d.c, &d.error) {
+            (Some(c), _) => Section::code(id, title, "c", c.trim_end()),
+            (None, e) => Section::text(id, title, e.clone().unwrap_or_default()),
+        });
+    }
+    rep.duration_ms = start.elapsed().as_millis() as u64;
+    Ok(rep)
+}
+
+/// Find an executable on `PATH` (honouring `PATHEXT` on Windows).
+pub fn which(name: &str) -> Option<std::path::PathBuf> {
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or(".EXE;.CMD;.BAT".into())
+            .split(';')
+            .map(str::to_string)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
+        exts.iter()
+            .map(|e| dir.join(format!("{name}{e}")))
+            .find(|p| p.is_file())
     })
 }
 
@@ -978,8 +1244,8 @@ pub fn doctor_report(find: &dyn Fn(&str) -> Option<std::path::PathBuf>) -> Repor
     const TOOLS: &[(&str, &[&str], &str)] = &[
         (
             "Ghidra",
-            &["ghidraRun", "analyzeHeadless"],
-            "decompiler: open the addresses from `rex functions`",
+            &["analyzeHeadless", "ghidraRun"],
+            "`rex decompile FILE FUNC` (set GHIDRA_INSTALL_DIR if analyzeHeadless is not on PATH)",
         ),
         (
             "radare2 / rizin",
@@ -1027,7 +1293,11 @@ pub fn doctor_report(find: &dyn Fn(&str) -> Option<std::path::PathBuf>) -> Repor
     let rows = TOOLS
         .iter()
         .map(|(name, exes, why)| {
-            let found = exes.iter().find_map(|e| find(e));
+            let found = if *name == "Ghidra" {
+                ghidra::locate(&|k| std::env::var(k).ok(), find)
+            } else {
+                exes.iter().find_map(|e| find(e))
+            };
             vec![
                 name.to_string(),
                 found
@@ -1347,6 +1617,18 @@ mod tests {
             at.contains("stp"),
             "address mode must decode AArch64, not x86: {at}"
         );
+    }
+
+    #[cfg(feature = "multiarch")]
+    #[test]
+    fn stripped_thumb_address_mode_decodes_thumb() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rex-binary/tests/fixtures/sample_thumb.stripped.elf");
+        let a = Artifact::from_bytes("sample_thumb.stripped.elf", std::fs::read(path).unwrap());
+        let o = AnalysisOptions::default();
+        // No mapping symbols: discovery learns the function is Thumb, and the listing uses that.
+        let at = disasm(&a, &o, None, Some(0x1030c), 4).unwrap();
+        assert!(at.contains("cbz") && at.contains("open-sesame"), "{at}");
     }
 
     #[test]

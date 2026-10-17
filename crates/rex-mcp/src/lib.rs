@@ -63,6 +63,12 @@ pub fn tools() -> Vec<Value> {
             &["path"],
         ),
         tool(
+            "rex_relocs",
+            "ELF dynamic relocations (type, symbol, addend, section), or with got=true each GOT slot: the import or pointer the loader writes, the PLT stub that jumps through it, and whether RELRO makes it read-only.",
+            json!({"path": path, "got": {"type": "boolean", "default": false}}),
+            &["path"],
+        ),
+        tool(
             "rex_disasm",
             "Disassemble a function by name/address (annotated listing with basic blocks, string references and resolved imports), or `count` instructions from an address.",
             json!({"path": path, "function": {"type": "string"}, "address": {"type": "string", "description": "hex like 0x401000"}, "count": {"type": "integer", "default": 64}}),
@@ -72,6 +78,12 @@ pub fn tools() -> Vec<Value> {
             "rex_cfg",
             "Control-flow graph of a function as Mermaid or Graphviz DOT.",
             json!({"path": path, "function": {"type": "string"}, "format": {"type": "string", "enum": ["mermaid", "dot"]}}),
+            &["path", "function"],
+        ),
+        tool(
+            "rex_decompile",
+            "Decompile a function to pseudo-C with Ghidra (optional: only works when Ghidra is installed; slow, as Ghidra analyses the whole file first). Use rex_disasm when this reports Ghidra missing.",
+            json!({"path": path, "function": {"type": "string", "description": "Function name or address"}}),
             &["path", "function"],
         ),
         tool(
@@ -85,6 +97,12 @@ pub fn tools() -> Vec<Value> {
             "Function-level diff of two binaries (patch analysis): changed/added/removed functions, import and string changes.",
             json!({"old": {"type": "string"}, "new": {"type": "string"}}),
             &["old", "new"],
+        ),
+        tool(
+            "rex_core",
+            "Crash triage of a Linux ELF core dump: signal and si_code, fault address, crashing thread's pc/sp as module+offset, all threads, mapped files, and code pointers found on the stack.",
+            json!({"path": path}),
+            &["path"],
         ),
         tool(
             "rex_carve",
@@ -124,7 +142,7 @@ pub static PROMPTS: &[PromptDef] = &[
         &[("path", "Path to the file")],
         "Triage `{path}` with rex, using static analysis only (never execute it).\n\
          1. Call rex_analyze on the path. Read the findings first, then packing, capabilities and strings.\n\
-         2. If it is a native binary, call rex_functions, then rex_xrefs on the most suspicious import or string, then rex_disasm on the one or two functions that matter.\n\
+         2. If it is a native binary, call rex_functions, then rex_xrefs on the most suspicious import or string, then rex_disasm on the one or two functions that matter (rex_decompile gives pseudo-C for one of them when Ghidra is installed; skip it if it reports Ghidra missing).\n\
          3. Report: what it is; what it can do (cite finding ids and ATT&CK ids); risk with justification and benign explanations; indicators (hashes, hosts, paths); and the 3 next steps a human should take.\n\
          Separate facts (from tool output) from inferences, and say what you could not determine.",
     ),
@@ -286,6 +304,13 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
         "rex_functions" => {
             md(&rex_engine::functions_report(&load("path")?, &opts).map_err(|e| e.to_string())?)
         }
+        "rex_relocs" => {
+            let got = args.get("got").and_then(Value::as_bool).unwrap_or(false);
+            md(
+                &rex_engine::relocs_report(&load("path")?, &opts, got)
+                    .map_err(|e| e.to_string())?,
+            )
+        }
         "rex_disasm" => {
             let a = load("path")?;
             let addr = s(args, "address").and_then(rex_engine::parse_addr);
@@ -309,6 +334,19 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
                 rex_engine::cfg(&a, &opts, f, fmt).map_err(|e| e.to_string())?
             )
         }
+        "rex_decompile" => {
+            let headless =
+                rex_engine::ghidra::locate(&|k| std::env::var(k).ok(), &rex_engine::which);
+            md(&rex_engine::decompile_report(
+                &load("path")?,
+                &opts,
+                Some(s(args, "function").ok_or("missing 'function'")?),
+                false,
+                rex_engine::ghidra::DEFAULT_TIMEOUT,
+                headless.as_deref(),
+            )
+            .map_err(|e| e.to_string())?)
+        }
         "rex_xrefs" => md(&rex_engine::xrefs(
             &load("path")?,
             &opts,
@@ -319,6 +357,9 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
             &rex_engine::diff_report(&load("old")?, &load("new")?, &opts)
                 .map_err(|e| e.to_string())?,
         ),
+        "rex_core" => {
+            md(&rex_engine::core_report(&load("path")?, &opts).map_err(|e| e.to_string())?)
+        }
         "rex_carve" => {
             md(&rex_engine::carve_report(&load("path")?, None).map_err(|e| e.to_string())?)
         }
@@ -378,7 +419,7 @@ pub fn handle(msg: &Value) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
                 "serverInfo": { "name": "rex", "title": "rex reverse-engineering toolkit", "version": rex_engine::rex_core::VERSION },
-                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs (binaries), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
+                "instructions": "rex statically analyses binaries (ELF/PE/Mach-O), firmware, Android apps, HAR traffic, JS bundles and source trees. It never executes inputs. Start with rex_analyze, then drill down with rex_functions / rex_disasm / rex_xrefs / rex_relocs (binaries, plus rex_decompile when Ghidra is installed), rex_core (crash dumps), rex_har_to_openapi (traffic) or rex_code_map (source). Ready-made workflows are available via prompts/list."
             }))
         }
         "ping" => Ok(json!({})),

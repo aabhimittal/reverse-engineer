@@ -37,7 +37,8 @@ Each chapter follows the same arc:
 `rex` is the companion tool. It is deliberately **static** (it never runs the input)
 and **broad**: one command, `rex analyze <anything>`, triages binaries, firmware,
 APKs, HAR captures, JavaScript bundles and source trees. Be clear about its limits:
-it does not compete with Ghidra's decompiler or IDA's debugger. It gets you from
+it does not compete with Ghidra's decompiler or IDA's debugger (with Ghidra installed,
+`rex decompile` hands a function to Ghidra's decompiler for you). It gets you from
 *"what is this?"* to *"where should I look?"* in seconds, then tells you which
 heavier tool to open next.
 

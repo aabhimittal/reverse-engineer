@@ -198,7 +198,7 @@ fn macho_entry_stubs_and_strings() {
 
 #[test]
 fn truncated_inputs_never_panic() {
-    for name in ["crackme.elf", "sample.exe", "hello.macho"] {
+    for name in ["crackme.elf", "sample.exe", "hello.macho", "core_x64.elf"] {
         let data = fixture(name);
         let mut cut = 0;
         while cut < data.len() {
@@ -378,9 +378,126 @@ mod arm {
         func(&p, "checksum");
         let main = func(&p, "main");
         assert!(main.calls.contains(&check.addr));
-        // Known gap: ARM32 PIC code reaches strings through literal pools holding pc-relative
-        // offsets (`ldr r0, [pc, #n]; add r0, pc, r0`), which are not resolved to the string.
+        // PIC code reaches strings through literal pools of pc-relative offsets
+        // (`ldr r0, [pc, #n]; add r0, pc, r0`).
+        assert!(
+            main.strings.iter().any(|s| s == "access granted"),
+            "{:?}",
+            main.strings
+        );
+        // ARM PLT entries (`add ip, pc, …; ldr pc, [ip, #n]!`) are named after their import.
+        assert!(p.stubs.values().any(|n| n == "stub_log"), "{:?}", p.stubs);
+        assert!(main.imports_called.iter().any(|n| n == "stub_log"));
     }
+
+    #[test]
+    fn thumb2_functions_are_decoded_in_thumb_mode() {
+        // ARM-mode _start and PLT, Thumb-2 functions: a mixed binary like most armhf builds.
+        let (b, p) = program("sample_thumb.elf");
+        assert!(!p.unsupported_arch);
+        assert_eq!(
+            b.arm_map.iter().find(|m| m.0 == b.entry).map(|m| m.1),
+            Some('a')
+        );
+        let check = func(&p, "check");
+        assert_eq!(
+            check.addr & 1,
+            0,
+            "the Thumb bit is not part of the address"
+        );
+        assert!(check.cyclomatic() >= 3, "{}", check.cyclomatic());
+        // Thumb instructions are 2 or 4 bytes; decoding them as ARM would give 4-byte garbage.
+        assert!(check.blocks[0].insns.iter().any(|i| i.bytes.len() == 2));
+        func(&p, "checksum");
+        let main = func(&p, "main");
+        assert!(main.calls.contains(&check.addr));
+        assert!(
+            main.strings.iter().any(|s| s == "access granted"),
+            "{:?}",
+            main.strings
+        );
+        // Thumb main calls the ARM PLT through `blx`.
+        assert!(main.imports_called.iter().any(|n| n == "stub_log"));
+        let start = func(&p, "_start");
+        assert!(
+            start
+                .imports_called
+                .iter()
+                .any(|n| n == "__libc_start_main")
+        );
+    }
+
+    #[test]
+    fn stripped_thumb2_main_is_found_through_its_got_slot() {
+        // glibc PIE _start: `ldr r0, [sl, ip]` loads main | 1 from main's GOT slot.
+        let (_, p) = program("sample_thumb.stripped.elf");
+        let main = p.main.expect("main inferred");
+        assert_eq!(main & 1, 0);
+        let f = &p.functions[&main];
+        assert_eq!(f.name, "main");
+        assert!(f.strings.iter().any(|s| s == "denied"), "{:?}", f.strings);
+        assert!(!f.calls.is_empty(), "main's Thumb code was followed");
+    }
+}
+
+#[test]
+fn elf_relocations_from_every_table() {
+    let b = Binary::parse(&fixture("crackme.elf")).unwrap();
+    let slot = |sym: &str| b.relocs.iter().find(|r| r.symbol.as_deref() == Some(sym));
+    let puts = slot("puts").expect("puts JUMP_SLOT");
+    assert_eq!(puts.kind_name, "R_X86_64_JUMP_SLOT");
+    assert_eq!(puts.table, "plt");
+    // -z now: the whole GOT is under RELRO.
+    assert!(puts.relro && puts.writable);
+    assert!(
+        b.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_X86_64_RELATIVE" && r.table == "rela")
+    );
+    assert!(rex_binary::relocs::textrel_finding(&b).is_none());
+
+    // The same program with -z pack-relative-relocs: the RELATIVE entries move to RELR.
+    let relr = Binary::parse(&fixture("crackme.relr.elf")).unwrap();
+    let packed: Vec<_> = relr.relocs.iter().filter(|r| r.table == "relr").collect();
+    assert_eq!(packed.len(), 3, "{packed:?}");
+    assert!(packed.iter().all(|r| r.kind_name == "R_X86_64_RELATIVE"));
+    // RELR addends live in the slot: .init_array's entry points at a function.
+    let init = packed
+        .iter()
+        .find(|r| r.section.as_deref() == Some(".init_array"));
+    assert!(init.and_then(|r| r.addend).is_some_and(|a| a > 0));
+
+    // REL (ARM): JUMP_SLOTs from DT_JMPREL, and main's RELATIVE GOT slot holds main | 1.
+    let arm = Binary::parse(&fixture("sample_thumb.elf")).unwrap();
+    assert!(
+        arm.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_ARM_JUMP_SLOT" && r.symbol.as_deref() == Some("stub_log"))
+    );
+    let main = arm.symbols.iter().find(|s| s.name == "main").unwrap().addr;
+    assert!(
+        arm.relocs
+            .iter()
+            .any(|r| r.kind_name == "R_ARM_RELATIVE" && r.addend == Some(main as i64 | 1))
+    );
+}
+
+#[test]
+fn text_relocations_are_reported() {
+    let b = Binary::parse(&fixture("textrel_arm.elf")).unwrap();
+    let f = rex_binary::relocs::textrel_finding(&b).expect("TEXTREL finding");
+    assert_eq!(f.id, "BIN-ELF-TEXTREL");
+    assert!(
+        f.evidence.iter().any(|e| e.contains(".text")),
+        "{:?}",
+        f.evidence
+    );
+    let ids: Vec<String> = report("textrel_arm.elf")
+        .findings
+        .into_iter()
+        .map(|f| f.id)
+        .collect();
+    assert!(ids.contains(&"BIN-ELF-TEXTREL".to_string()), "{ids:?}");
 }
 
 #[cfg(not(feature = "multiarch"))]
@@ -447,4 +564,91 @@ fn pe_version_info_and_manifest_elevation() {
         ids.contains(&"BIN-PE-MANIFEST-ELEVATION") && ids.contains(&"BIN-PE-MANIFEST-UIACCESS"),
         "{ids:?}"
     );
+}
+
+#[test]
+fn core_dump_triage() {
+    for (name, arch, pc_reg) in [
+        ("core_x64.elf", Arch::X86_64, "rip"),
+        ("core_a64.elf", Arch::AArch64, "pc"),
+    ] {
+        let b = Binary::parse(&fixture(name)).unwrap();
+        assert_eq!(b.arch, arch);
+        assert_eq!(b.file_type, "core dump");
+        assert!(b.mitigations.is_empty(), "{name}: no checksec on a core");
+        let c = b.core.as_ref().expect("core info");
+        assert_eq!((c.signal, c.signal_name.as_str()), (11, "SIGSEGV"));
+        assert_eq!(c.si_code, Some(1));
+        assert_eq!(c.fault_addr, Some(0x10));
+        assert_eq!(c.pid, Some(4242));
+        assert_eq!(c.threads.len(), 2);
+        let t = c.crashing_thread().unwrap();
+        assert_eq!(
+            (t.tid, t.pc, t.sp),
+            (4242, Some(0x5555_5555_5139), Some(0x7fff_ffff_e800))
+        );
+        assert!(
+            t.regs
+                .iter()
+                .any(|&(n, v)| n == pc_reg && v == 0x5555_5555_5139)
+        );
+        assert_eq!(
+            c.symbolize(0x5555_5555_5139).as_deref(),
+            Some("crashme+0x1139")
+        );
+        assert_eq!(c.mappings.len(), 4);
+        assert_eq!(c.auxv.execfn.as_deref(), Some("/usr/bin/crashme"));
+        assert_eq!(c.command.as_deref(), Some("crashme"));
+
+        let r = report(name);
+        assert!(r.errors.is_empty(), "{name}: {:?}", r.errors);
+        let ids: Vec<&str> = r.findings.iter().map(|f| f.id.as_str()).collect();
+        assert!(
+            ids.contains(&"BIN-CORE-CRASH") && ids.contains(&"BIN-CORE-NULL-DEREF"),
+            "{ids:?}"
+        );
+        let crash = r
+            .findings
+            .iter()
+            .find(|f| f.id == "BIN-CORE-CRASH")
+            .unwrap();
+        assert_eq!(crash.severity, Severity::Medium);
+        assert!(crash.evidence.iter().any(|e| e.contains("crashme+0x1139")));
+        let stack = serde_json::to_string(r.section("binary.core.stack").unwrap()).unwrap();
+        assert!(
+            stack.contains("crashme+0x11a4") && stack.contains("libc.so.6+0x51d90"),
+            "{stack}"
+        );
+        for absent in [
+            "binary.checksec",
+            "binary.functions",
+            "binary.packer",
+            "binary.capabilities",
+        ] {
+            assert!(
+                r.section(absent).is_none(),
+                "{name}: {absent} ran on a core"
+            );
+        }
+        assert!(r.section("binary.strings").is_some(), "strings still run");
+    }
+
+    // A pc outside every executable mapping (here: on the stack) is a possible hijack.
+    let mut d = fixture("core_x64.elf");
+    let pc = 0x5555_5555_5139u64.to_le_bytes();
+    let i = d.windows(8).position(|w| w == pc).unwrap();
+    d[i..i + 8].copy_from_slice(&0x7fff_ffff_e800u64.to_le_bytes());
+    let mut r = Registry::new();
+    rex_binary::register(&mut r);
+    let rep = r.run(
+        &Artifact::from_bytes("hijack", d),
+        &AnalysisOptions::default(),
+        &[],
+    );
+    let crash = rep
+        .findings
+        .iter()
+        .find(|f| f.id == "BIN-CORE-CRASH")
+        .unwrap();
+    assert_eq!(crash.severity, Severity::High);
 }

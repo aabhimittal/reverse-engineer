@@ -43,6 +43,32 @@ rex reverses this: it decodes every stub, reads the slot each one jumps through,
 the slot back to the import name from the relocation / import tables. That's how a stripped
 binary's disassembly still says `call strlen@plt`.
 
+### Relocations and the GOT
+
+Relocations are the loader's to-do list: "write this value into that slot". `rex relocs` lists every dynamic
+relocation, whichever table it is in: RELA (`.rela.dyn`, x86-64 and AArch64), REL (`.rel.dyn`, 32-bit ARM and
+i386, where the addend is the value already in the slot), the PLT table (`DT_JMPREL`), and RELR, the packed form
+newer toolchains emit with `-z pack-relative-relocs`, where one word marks up to 63 slots.
+
+```sh
+rex relocs crates/rex-binary/tests/fixtures/crackme.elf          # every relocation
+rex relocs crates/rex-binary/tests/fixtures/crackme.elf --got    # one row per GOT slot
+```
+
+The types you will see most:
+
+| Type | The loader writes | Typical slot |
+|---|---|---|
+| `JUMP_SLOT` | the import's address | `.got.plt`, one per PLT stub |
+| `GLOB_DAT` | a symbol's address | `.got`, for data or function pointers |
+| `RELATIVE` | load base + addend | pointers inside the binary (vtables, `.init_array`, `main`'s GOT slot) |
+| `COPY` | a copy of a library variable | `.bss` |
+
+`--got` adds the PLT stub that jumps through each slot and whether the slot is read-only after loading. With full
+RELRO (`-z now`) the whole GOT is; with partial RELRO, `.got.plt` stays writable, which is what a GOT-overwrite
+exploit relies on. A relocation that lands in a read-only section (a **text relocation**, finding
+`BIN-ELF-TEXTREL`) makes the loader turn code pages writable while it patches them.
+
 ## Hands-on
 
 ```sh

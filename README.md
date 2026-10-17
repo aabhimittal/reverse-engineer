@@ -29,7 +29,7 @@ what's risky about it, and where to look next*, then hands you off to Ghidra, a 
 
 | Domain | Capabilities |
 |---|---|
-| **Native binaries** (ELF, PE, Mach-O, incl. fat) | Unified model of sections/imports/exports/symbols; **checksec** (NX, PIE/ASLR, RELRO, canary, FORTIFY, CFG, CET/BTI, signing, hardened runtime); classified strings (URLs, IPs, registry keys, secrets, commands); **50+ capability rules mapped to MITRE ATT&CK**; packer heuristics; imphash + TLSH; optional YARA-X. **Go**: version, modules, dependencies and build settings, plus every function name from the pclntab even in stripped builds (all Go targets). **.NET**: CLI metadata (assembly, references, types, P/Invoke imports fed to the capability rules). **PE** version info and manifest elevation/uiAccess |
+| **Native binaries** (ELF, PE, Mach-O, incl. fat) | Unified model of sections/imports/exports/symbols; **checksec** (NX, PIE/ASLR, RELRO, canary, FORTIFY, CFG, CET/BTI, signing, hardened runtime); classified strings (URLs, IPs, registry keys, secrets, commands); **50+ capability rules mapped to MITRE ATT&CK**; packer heuristics; imphash + TLSH; optional YARA-X. **Go**: version, modules, dependencies and build settings, plus every function name from the pclntab even in stripped builds (all Go targets). **.NET**: CLI metadata (assembly, references, types, P/Invoke imports fed to the capability rules). **PE** version info and manifest elevation/uiAccess. **ELF relocations** from every table (RELA, REL, PLT, RELR) and a GOT view (`rex relocs --got`: what lands in each slot, the PLT stub using it, RELRO), with a text-relocation finding **Linux core dumps** (`rex core`): signal and `si_code`, fault address, per-thread registers, mapped files, the crashing pc as `module+offset` and code pointers on the stack |
 | **Code recovery** (x86/x64 built in; **AArch64 and 32-bit ARM** via `--features multiarch`, linear disassembly for MIPS, PowerPC, RISC-V) | Recursive-descent function discovery seeded from symbols, `.eh_frame`, `.pdata`, `LC_FUNCTION_STARTS`; PLT/IAT/stub resolution; `main` inference in stripped binaries; basic blocks, CFGs (Mermaid/DOT), call graph, cross-references, cyclomatic complexity |
 | **Firmware & blobs** | binwalk-style carving with per-format validators and exact sizing, entropy profile, extraction (gzip/uImage unwrapping), embedded credential and key checks |
 | **Patch analysis** | Function-level binary diff: matches by name, instruction hash, then trigram similarity; flags small surgical changes. `rex compare old.json new.json` diffs two saved reports (findings, imports, capabilities, mitigations…) and `--fail-on` turns regressions into a failing CI step |
@@ -119,7 +119,7 @@ foundations and ethics, executable formats, x86-64 for reversers, static and dyn
 malware triage and YARA, patch diffing, traffic to API spec, JS bundles, codebase archaeology, AI-assisted RE.
 
 [`labs/`](labs) contains benign, reproducible practice material: a crackme, an intentionally vulnerable binary, a
-Windows PE, a Mach-O, a firmware image, a HAR capture, a JS bundle with a source map, an Android APK, a WebAssembly
+Windows PE, a Mach-O, a firmware image, two crash core dumps, a HAR capture, a JS bundle with a source map, an Android APK, a WebAssembly
 module and a deliberately insecure Electron app. See the [showcase](docs/src/showcase.md) for real transcripts. All are built
 from sources or generator scripts in the repo.
 
@@ -131,18 +131,18 @@ make -C labs && mdbook serve docs
 
 | | rex | Ghidra / IDA / Binary Ninja | radare2 | binwalk / unblob | mitmproxy2swagger |
 |---|---|---|---|---|---|
-| Decompiler | no | **yes** | partial | no | n/a |
+| Decompiler | via Ghidra, if installed (`rex decompile`) | **yes** | partial | no | n/a |
 | Interactive debugging | no | partial | **yes** | no | n/a |
 | Binaries + firmware + APK + Electron + WASM + HAR + JS + source trees in one tool | **yes** | no | no | no | no |
 | Machine-readable findings, SARIF, CI gating | **yes** | no | no | no | no |
 | Single static binary, instant start | **yes** | no | yes | no | no |
 | MCP server for agents | **yes** | via plugins | via plugins | no | no |
 
-`rex` is **not** a decompiler or debugger and doesn't try to be. Use it to decide where to point those.
+`rex` has no decompiler or debugger of its own. Use it to decide where to point those; with Ghidra installed, `rex decompile FILE FUNC` hands a function to Ghidra's decompiler and returns the pseudo-C.
 
 ## Honest limitations
 
-- Control-flow recovery and function diffing cover **x86/x64, AArch64 and 32-bit ARM (ARM mode)**. Thumb, MIPS, PowerPC and RISC-V get linear disassembly (Capstone) only. On AArch64, PLT stubs, string references and `main` in stripped glibc-style binaries are resolved; on ARM32, PLT names and PC-relative string pools are not. Indirect branches (`br`, `blr`, jump tables) are not followed.
+- Control-flow recovery and function diffing cover **x86/x64, AArch64 and 32-bit ARM (ARM and Thumb-2, including mixed binaries)**. MIPS, PowerPC and RISC-V get linear disassembly (Capstone) only. On AArch64 and ARM32, PLT stubs, string references (including ARM's PC-relative literal pools) and `main` in stripped glibc-style binaries are resolved. Indirect branches (`br`, `blr`, `bx rN`, jump tables) are not followed.
 - Heuristics (capabilities, packer score, secret patterns) produce **leads, not verdicts**. Findings say why they fired.
 - Obfuscated or virtualised code defeats static analysis; unpack or trace dynamically first.
 - WebAssembly is disassembled (with branch targets and import call sites) but not decompiled, and `call_indirect` targets are not resolved; pair it with WABT or Ghidra.

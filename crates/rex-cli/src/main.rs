@@ -166,6 +166,8 @@ enum Cmd {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
+    /// Crash triage of a Linux core dump: signal, fault address, threads, mappings.
+    Core { path: PathBuf },
     /// Extract and classify strings.
     Strings {
         path: PathBuf,
@@ -181,6 +183,13 @@ enum Cmd {
     },
     /// List recovered functions.
     Functions { path: PathBuf },
+    /// ELF dynamic relocations (RELA, REL, PLT, RELR), or the GOT with `--got`.
+    Relocs {
+        path: PathBuf,
+        /// Show each GOT slot: what the loader writes, the PLT stub using it, and RELRO.
+        #[arg(long)]
+        got: bool,
+    },
     /// Disassemble a function or address range.
     Disasm {
         path: PathBuf,
@@ -200,6 +209,18 @@ enum Cmd {
         function: String,
         #[arg(long)]
         dot: bool,
+    },
+    /// Decompile a function to pseudo-C with Ghidra (optional; needs Ghidra installed).
+    Decompile {
+        path: PathBuf,
+        /// Function name or address (as in `rex functions`).
+        function: Option<String>,
+        /// Decompile every function (up to 500).
+        #[arg(long, conflicts_with = "function")]
+        all: bool,
+        /// Give up after this many seconds (Ghidra's start-up and auto-analysis included).
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
     },
     /// Call graph (Mermaid) from main/entry or a given function.
     Callgraph {
@@ -486,6 +507,10 @@ fn run(cli: Cli) -> Result<i32> {
                 .collect::<Result<Vec<_>>>()?;
             ctx.emit(&[rex_engine::checksec_many(&arts)])
         }
+        Cmd::Core { path } => {
+            let a = ctx.load(&path)?;
+            ctx.emit(&[rex_engine::core_report(&a, o)?])
+        }
         Cmd::Strings {
             path,
             min_len,
@@ -498,6 +523,10 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Functions { path } => {
             let a = ctx.load(&path)?;
             ctx.emit(&[rex_engine::functions_report(&a, o)?])
+        }
+        Cmd::Relocs { path, got } => {
+            let a = ctx.load(&path)?;
+            ctx.emit(&[rex_engine::relocs_report(&a, o, got)?])
         }
         Cmd::Disasm {
             path,
@@ -520,6 +549,23 @@ fn run(cli: Cli) -> Result<i32> {
                 count,
             )?)?;
             Ok(0)
+        }
+        Cmd::Decompile {
+            path,
+            function,
+            all,
+            timeout,
+        } => {
+            let a = ctx.load(&path)?;
+            let headless = rex_engine::ghidra::locate(&|k| std::env::var(k).ok(), &setup::which);
+            ctx.emit(&[rex_engine::decompile_report(
+                &a,
+                o,
+                function.as_deref(),
+                all,
+                std::time::Duration::from_secs(timeout),
+                headless.as_deref(),
+            )?])
         }
         Cmd::Cfg {
             path,

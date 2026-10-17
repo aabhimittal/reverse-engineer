@@ -117,6 +117,17 @@ pub trait CodeDecoder {
     fn max_insn_len(&self) -> usize;
     /// Drop per-path register state before following a new path.
     fn reset(&mut self) {}
+    /// Turn a code pointer (a symbol value, a pointer read from memory) into an instruction
+    /// address. On 32-bit ARM bit 0 of a code pointer selects Thumb: the decoder notes the mode
+    /// and returns the address with the bit cleared.
+    fn code_addr(&mut self, ptr: u64) -> u64 {
+        ptr
+    }
+    /// Whether the code at `addr` is Thumb (32-bit ARM only).
+    fn is_thumb(&self, addr: u64) -> bool {
+        let _ = addr;
+        false
+    }
 }
 
 impl CodeDecoder for X86 {
@@ -133,83 +144,205 @@ impl CodeDecoder for X86 {
 
 /// Pick the decoder for a binary, or `None` when its CPU has only linear disassembly.
 ///
-/// x86 is built in. AArch64 and 32-bit ARM (ARM mode, not Thumb) need the `multiarch` feature.
-pub fn decoder_for(bin: &crate::model::Binary, names: &Names) -> Option<Box<dyn CodeDecoder>> {
+/// x86 is built in. AArch64 and 32-bit ARM (ARM and Thumb) need the `multiarch` feature. `data`
+/// is the file; 32-bit ARM keeps a copy of its code sections to read literal pools.
+pub fn decoder_for(
+    bin: &crate::model::Binary,
+    data: &[u8],
+    names: &Names,
+) -> Option<Box<dyn CodeDecoder>> {
     use crate::model::Arch;
+    let _ = data;
     match &bin.arch {
         Arch::X86 | Arch::X86_64 => Some(Box::new(X86::new(bin.bits, names))),
         #[cfg(feature = "multiarch")]
         Arch::AArch64 if bin.little_endian => Cs::new(true).map(|d| Box::new(d) as _),
         #[cfg(feature = "multiarch")]
-        Arch::Arm if bin.little_endian && !looks_thumb(bin) => {
-            Cs::new(false).map(|d| Box::new(d) as _)
-        }
+        Arch::Arm if bin.little_endian => Cs::arm32(bin, data).map(|d| Box::new(d) as _),
         _ => None,
     }
 }
 
-/// Thumb code is marked by odd symbol/entry addresses or ARM ELF mapping symbols (`$t`).
-#[cfg(feature = "multiarch")]
-fn looks_thumb(bin: &crate::model::Binary) -> bool {
-    bin.entry & 1 == 1
-        || bin.symbols.iter().any(|s| {
-            s.name.starts_with("$t") || (s.kind == crate::model::SymKind::Func && s.addr & 1 == 1)
-        })
-}
-
-/// Capstone-backed decoder for fixed-width ARM encodings, with flow recovered by [`crate::arm`].
+/// Capstone-backed decoder for ARM encodings, with flow recovered by [`crate::arm`].
 #[cfg(feature = "multiarch")]
 pub struct Cs {
     cs: capstone::Capstone,
     a64: bool,
     tracker: crate::arm::Tracker,
+    /// 32-bit ARM only: the Thumb decoder, and the instruction set by address.
+    thumb: Option<ArmState>,
+}
+
+/// What a 32-bit ARM decoder knows beyond one instruction.
+#[cfg(feature = "multiarch")]
+struct ArmState {
+    cs: capstone::Capstone,
+    /// From each address on: ARM (`'a'`), Thumb (`'t'`) or data (`'d'`).
+    modes: std::collections::BTreeMap<u64, char>,
+    /// The map came from mapping symbols, which cover every byte; don't add guesses to it.
+    complete: bool,
+    mem: ArmMem,
+}
+
+/// Code bytes (for literal pools) and the data ranges of a 32-bit ARM image.
+#[cfg(feature = "multiarch")]
+struct ArmMem {
+    code: Vec<(u64, Vec<u8>)>,
+    data: Vec<(u64, u64)>,
 }
 
 #[cfg(feature = "multiarch")]
+impl crate::arm::Mem for ArmMem {
+    fn word(&self, addr: u64) -> Option<u32> {
+        let (start, bytes) = self
+            .code
+            .iter()
+            .find(|(s, b)| addr >= *s && addr < s.saturating_add(b.len() as u64))?;
+        let off = (addr - start) as usize;
+        let w = bytes.get(off..off.checked_add(4)?)?;
+        Some(u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    }
+    fn is_data(&self, addr: u64) -> bool {
+        self.data.iter().any(|&(s, e)| addr >= s && addr < e)
+    }
+}
+
+/// Literal pools of more code than this are not read (flow recovery still works).
+#[cfg(feature = "multiarch")]
+const MAX_ARM_CODE_COPY: usize = 256 << 20;
+
+#[cfg(feature = "multiarch")]
 impl Cs {
-    /// `a64 = true` for AArch64, `false` for 32-bit ARM in ARM mode (little endian).
+    /// `a64 = true` for AArch64, `false` for 32-bit ARM in ARM mode only (little endian).
     pub fn new(a64: bool) -> Option<Self> {
+        Some(Self {
+            cs: Self::build(if a64 { 'x' } else { 'a' })?,
+            a64,
+            tracker: Default::default(),
+            thumb: None,
+        })
+    }
+
+    /// A 32-bit ARM decoder that follows the binary's ARM/Thumb map and reads literal pools.
+    pub fn arm32(bin: &crate::model::Binary, data: &[u8]) -> Option<Self> {
+        let mut code = Vec::new();
+        let mut copied = 0usize;
+        for s in bin.code_sections() {
+            let bytes = bin.section_bytes(data, s);
+            copied = copied.saturating_add(bytes.len());
+            if copied > MAX_ARM_CODE_COPY {
+                code.clear();
+                break;
+            }
+            code.push((s.addr, bytes.to_vec()));
+        }
+        let data_ranges = bin
+            .sections
+            .iter()
+            .filter(|s| s.perms.r && !s.perms.x && s.addr != 0)
+            .map(|s| (s.addr, s.addr.saturating_add(s.size)))
+            .collect();
+        Some(Self {
+            cs: Self::build('a')?,
+            a64: false,
+            tracker: Default::default(),
+            thumb: Some(ArmState {
+                cs: Self::build('t')?,
+                modes: bin.arm_map.iter().copied().collect(),
+                complete: !bin.stripped && bin.arm_map.iter().any(|m| m.1 == 'd'),
+                mem: ArmMem {
+                    code,
+                    data: data_ranges,
+                },
+            }),
+        })
+    }
+
+    fn build(mode: char) -> Option<capstone::Capstone> {
         use capstone::prelude::*;
-        let cs = if a64 {
-            Capstone::new()
+        match mode {
+            'x' => Capstone::new()
                 .arm64()
                 .mode(arch::arm64::ArchMode::Arm)
-                .build()
-        } else {
-            Capstone::new()
+                .build(),
+            't' => Capstone::new()
+                .arm()
+                .mode(arch::arm::ArchMode::Thumb)
+                .endian(capstone::Endian::Little)
+                .build(),
+            _ => Capstone::new()
                 .arm()
                 .mode(arch::arm::ArchMode::Arm)
                 .endian(capstone::Endian::Little)
-                .build()
+                .build(),
         }
-        .ok()?;
-        Some(Self {
-            cs,
-            a64,
-            tracker: Default::default(),
-        })
+        .ok()
+    }
+
+    /// The instruction set at `addr` (`'a'` when nothing says otherwise).
+    fn mode_at(&self, addr: u64) -> char {
+        self.thumb
+            .as_ref()
+            .and_then(|t| t.modes.range(..=addr).next_back().map(|m| *m.1))
+            .unwrap_or('a')
+    }
+
+    /// Record that code at `addr` is in `mode`, unless mapping symbols already say.
+    fn learn(&mut self, addr: u64, mode: char) {
+        if let Some(t) = self.thumb.as_mut() {
+            if !t.complete {
+                t.modes.entry(addr).or_insert(mode);
+            }
+        }
     }
 }
 
 #[cfg(feature = "multiarch")]
 impl CodeDecoder for Cs {
     fn decode_one(&mut self, bytes: &[u8], addr: u64) -> Option<Insn> {
-        let insns = self.cs.disasm_count(bytes.get(..4)?, addr, 1).ok()?;
+        let mode = if self.a64 { 'x' } else { self.mode_at(addr) };
+        let cs = match (mode, &self.thumb) {
+            ('d', _) => return None,
+            ('t', Some(t)) => &t.cs,
+            ('t', None) => return None,
+            _ => &self.cs,
+        };
+        let window = bytes.get(..bytes.len().min(4))?;
+        if window.len() < if mode == 't' { 2 } else { 4 } {
+            return None;
+        }
+        let insns = cs.disasm_count(window, addr, 1).ok()?;
         let i = insns.iter().next()?;
         let mnemonic = i.mnemonic().unwrap_or("").to_string();
-        let ops = i.op_str().unwrap_or("");
-        let (flow, data_ref) = if self.a64 {
-            self.tracker.a64(&mnemonic, ops, addr)
-        } else {
-            self.tracker.arm32(&mnemonic, ops, addr)
+        let ops = i.op_str().unwrap_or("").to_string();
+        let raw = i.bytes().to_vec();
+        drop(insns);
+        let (flow, data_ref) = match &self.thumb {
+            None if self.a64 => self.tracker.a64(&mnemonic, &ops, addr),
+            None => self.tracker.arm32(&mnemonic, &ops, addr, false, &()),
+            Some(t) => self
+                .tracker
+                .arm32(&mnemonic, &ops, addr, mode == 't', &t.mem),
         };
+        if !self.a64 {
+            // `blx #imm` always switches instruction set; other direct branches keep it.
+            if let Flow::Call(t) | Flow::Jump(t) | Flow::CondJump(t) = flow {
+                let switch = mnemonic == "blx";
+                let target_mode = match (mode, switch) {
+                    ('t', true) => 'a',
+                    ('a', true) => 't',
+                    (m, _) => m,
+                };
+                self.learn(t, target_mode);
+            }
+        }
         // Straight-line register state does not survive a control transfer.
         if flow != Flow::Next {
-            self.tracker.reset();
+            self.tracker.after_branch();
         }
         Some(Insn {
             addr,
-            bytes: i.bytes().to_vec(),
+            bytes: raw,
             text: if ops.is_empty() {
                 mnemonic.clone()
             } else {
@@ -232,8 +365,21 @@ impl CodeDecoder for Cs {
                     a += i.len();
                     out.push(i);
                 }
+                None if !self.a64 && self.mode_at(a) == 't' => {
+                    // Undecodable halfword in Thumb code.
+                    let Some(w) = rest.get(..2) else { break };
+                    out.push(Insn {
+                        addr: a,
+                        bytes: w.to_vec(),
+                        mnemonic: ".short".into(),
+                        text: format!(".short 0x{:04x}", u16::from_le_bytes([w[0], w[1]])),
+                        flow: Flow::Next,
+                        data_ref: None,
+                    });
+                    a += 2;
+                }
                 None => {
-                    // Undecodable word: emit it as data and stay aligned.
+                    // Undecodable word (or a literal pool): emit it as data and stay aligned.
                     let Some(w) = rest.get(..4) else { break };
                     out.push(Insn {
                         addr: a,
@@ -257,6 +403,16 @@ impl CodeDecoder for Cs {
     }
     fn reset(&mut self) {
         self.tracker.reset();
+    }
+    fn is_thumb(&self, addr: u64) -> bool {
+        !self.a64 && self.mode_at(addr) == 't'
+    }
+    fn code_addr(&mut self, ptr: u64) -> u64 {
+        if self.thumb.is_some() && ptr & 1 == 1 {
+            self.learn(ptr & !1, 't');
+            return ptr & !1;
+        }
+        ptr
     }
 }
 
