@@ -6,6 +6,8 @@ language = "en"
 src = "src"
 
 [output.html]
+# Published under the website at /reverse-engineer/docs/ (see .github/workflows/pages.yml); the 404 page needs it.
+site-url = "/reverse-engineer/docs/"
 git-repository-url = "https://github.com/aabhimittal/reverse-engineer"
 edit-url-template = "https://github.com/aabhimittal/reverse-engineer/edit/main/docs/{path}"
 default-theme = "light"
