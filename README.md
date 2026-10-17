@@ -142,7 +142,7 @@ make -C labs && mdbook serve docs
 
 ## Honest limitations
 
-- Control-flow recovery and function diffing cover **x86/x64, AArch64 and 32-bit ARM (ARM mode)**. Thumb, MIPS, PowerPC and RISC-V get linear disassembly (Capstone) only. On AArch64, PLT stubs, string references and `main` in stripped glibc-style binaries are resolved; on ARM32, PLT names and PC-relative string pools are not. Indirect branches (`br`, `blr`, jump tables) are not followed.
+- Control-flow recovery and function diffing cover **x86/x64, AArch64 and 32-bit ARM (ARM and Thumb-2, including mixed binaries)**. MIPS, PowerPC and RISC-V get linear disassembly (Capstone) only. On AArch64 and ARM32, PLT stubs, string references (including ARM's PC-relative literal pools) and `main` in stripped glibc-style binaries are resolved. Indirect branches (`br`, `blr`, `bx rN`, jump tables) are not followed.
 - Heuristics (capabilities, packer score, secret patterns) produce **leads, not verdicts**. Findings say why they fired.
 - Obfuscated or virtualised code defeats static analysis; unpack or trace dynamically first.
 - WebAssembly is disassembled (with branch targets and import call sites) but not decompiled, and `call_indirect` targets are not resolved; pair it with WABT or Ghidra.

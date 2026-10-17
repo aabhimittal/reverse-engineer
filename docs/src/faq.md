@@ -25,7 +25,7 @@ function. It is not a decompiler and not a debugger.
 
 **Which architectures get full analysis?**
 Function discovery, control-flow graphs, call graphs and function-level diffing work for x86, x86-64, AArch64 and
-32-bit ARM in ARM mode (the last two need `--features multiarch`, which release binaries include). Thumb code,
+32-bit ARM, both ARM and Thumb-2 code (the last two need `--features multiarch`, which release binaries include).
 MIPS, PowerPC and RISC-V get linear disassembly only. Everything format-level (headers, imports, checksec, strings,
 capabilities) works on all supported formats.
 

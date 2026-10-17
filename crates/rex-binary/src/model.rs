@@ -260,6 +260,12 @@ pub struct Binary {
     /// pointer lives in the relocation addend (e.g. the GOT slot glibc's PIE `_start` loads
     /// `main` from).
     pub relocated_ptrs: Vec<(u64, u64)>,
+    /// 32-bit ARM instruction-set map, sorted by address: from each address on, the code is ARM
+    /// (`'a'`), Thumb (`'t'`) or data (`'d'`). Built from the ELF mapping symbols (`$a`, `$t`,
+    /// `$d`) and bit 0 of function symbols and the entry point, which this model clears (a Thumb
+    /// function's symbol value is its address | 1).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arm_map: Vec<(u64, char)>,
     /// Go toolchain build information, for binaries built by Go.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub go: Option<crate::go::BuildInfo>,
@@ -663,6 +669,9 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         }
     }
 
+    let is_arm = e.header.e_machine == elf::header::EM_ARM;
+    let mut arm_map = Vec::new();
+    let mut fn_modes = Vec::new();
     let mut symbols = Vec::new();
     let mut exports = Vec::new();
     for (tab, strtab, is_dyn) in [
@@ -677,6 +686,12 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
             if name.is_empty() {
                 continue;
             }
+            if is_arm {
+                if let Some(m) = arm_mapping_symbol(name) {
+                    arm_map.push((s.st_value, m));
+                    continue;
+                }
+            }
             let kind = match s.st_type() {
                 elf::sym::STT_FUNC => SymKind::Func,
                 elf::sym::STT_OBJECT => SymKind::Object,
@@ -685,7 +700,12 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
             if kind == SymKind::Other {
                 continue;
             }
-            let item = sym(name, s.st_value, s.st_size, kind);
+            let mut addr = s.st_value;
+            if is_arm && kind == SymKind::Func {
+                addr &= !1;
+                fn_modes.push((addr, if s.st_value & 1 == 1 { 't' } else { 'a' }));
+            }
+            let item = sym(name, addr, s.st_size, kind);
             if is_dyn && s.st_bind() != elf::sym::STB_LOCAL {
                 exports.push(item.clone());
             }
@@ -696,6 +716,12 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
     symbols.dedup_by(|a, b| a.addr == b.addr && a.name == b.name);
     exports.sort_by_key(|s| s.addr);
     exports.dedup_by(|a, b| a.addr == b.addr && a.name == b.name);
+    let mut entry = e.entry;
+    if is_arm && entry != 0 {
+        fn_modes.push((entry & !1, if entry & 1 == 1 { 't' } else { 'a' }));
+        entry &= !1;
+    }
+    let arm_map = merge_arm_map(arm_map, fn_modes);
 
     let file_type = match e.header.e_type {
         elf::header::ET_EXEC => "executable",
@@ -767,7 +793,7 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         bits: if bits64 { 64 } else { 32 },
         little_endian: e.little_endian,
         file_type,
-        entry: e.entry,
+        entry,
         image_base: e
             .program_headers
             .iter()
@@ -789,12 +815,32 @@ fn from_elf(e: &elf::Elf, data: &[u8]) -> Binary {
         slice_size: data.len() as u64,
         function_starts: Vec::new(),
         relocated_ptrs: elf_relative_relocs(e),
+        arm_map,
         go: None,
         dotnet: None,
     };
     b.function_starts = elf_eh_frame_starts(&b, data);
     b.mitigations = crate::checksec::elf(e, &b, data);
     b
+}
+
+/// `$a`, `$t`, `$d` (optionally followed by `.anything`) → the mode letter.
+fn arm_mapping_symbol(name: &str) -> Option<char> {
+    let rest = name.strip_prefix('$')?;
+    let mut c = rest.chars();
+    let m = c.next().filter(|m| matches!(m, 'a' | 't' | 'd'))?;
+    let tail = c.as_str();
+    (tail.is_empty() || tail.starts_with('.')).then_some(m)
+}
+
+/// Mapping symbols say what every byte is; function symbols and the entry point only say what a
+/// function starts as. With mapping symbols present (unstripped objects) they win; in stripped
+/// binaries the function starts are all there is.
+fn merge_arm_map(mapping: Vec<(u64, char)>, starts: Vec<(u64, char)>) -> Vec<(u64, char)> {
+    let mut map = if mapping.is_empty() { starts } else { mapping };
+    map.sort_unstable();
+    map.dedup_by_key(|m| m.0);
+    map
 }
 
 /// Function starts from `.eh_frame` FDEs. Even stripped binaries keep these,
@@ -1043,6 +1089,7 @@ fn from_pe(p: &pe::PE, data: &[u8]) -> Binary {
             .unwrap_or_default(),
         // PE base relocations keep the preferred-base pointer in the file, so reads are already right.
         relocated_ptrs: Vec::new(),
+        arm_map: Vec::new(),
         go: None,
         dotnet: None,
     };
@@ -1508,6 +1555,7 @@ fn from_macho(m: &mach::MachO, data: &[u8], slice_offset: u64, slice_size: u64) 
         slice_size,
         function_starts: macho_function_starts(m, data),
         relocated_ptrs: Vec::new(),
+        arm_map: Vec::new(),
         go: None,
         dotnet: None,
     };

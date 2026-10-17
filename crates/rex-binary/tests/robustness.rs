@@ -15,10 +15,16 @@ fn fixture(name: &str) -> Vec<u8> {
 
 #[test]
 fn mutated_binaries_never_panic() {
-    let seeds: Vec<Vec<u8>> = ["crackme.elf", "vuln.elf", "sample.exe", "hello.macho"]
-        .iter()
-        .map(|n| fixture(n))
-        .collect();
+    let seeds: Vec<Vec<u8>> = [
+        "crackme.elf",
+        "vuln.elf",
+        "sample.exe",
+        "hello.macho",
+        "sample_thumb.elf",
+    ]
+    .iter()
+    .map(|n| fixture(n))
+    .collect();
     let opts = AnalysisOptions {
         max_functions: 100,
         max_insns_per_function: 1000,

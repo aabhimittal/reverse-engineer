@@ -74,7 +74,8 @@ ls -l "$OUT"
 echo "[*] ELF (AArch64 and 32-bit ARM, dynamic with a PLT)"
 # A tiny stub library gives the lab a real PLT; lld links without needing a target libc.
 for spec in "aarch64-linux-gnu:sample_a64.elf:/lib/ld-linux-aarch64.so.1:" \
-            "armv7-linux-gnueabi:sample_arm32.elf:/lib/ld-linux.so.3:-marm"; do
+            "armv7-linux-gnueabi:sample_arm32.elf:/lib/ld-linux.so.3:-marm" \
+            "armv7-linux-gnueabihf:sample_thumb.elf:/lib/ld-linux-armhf.so.3:-mthumb -DLIBC_START"; do
   IFS=: read -r tgt out interp extra <<<"$spec"
   # shellcheck disable=SC2086
   clang --target="$tgt" $extra -O1 -fPIC -nostdlib -shared -fuse-ld=lld -Wl,-soname,libstub.so \
@@ -85,6 +86,7 @@ for spec in "aarch64-linux-gnu:sample_a64.elf:/lib/ld-linux-aarch64.so.1:" \
   ld.lld -pie -dynamic-linker "$interp" --build-id=none -o "$OUT/$out" "$TMP/sample_arm.o" "$TMP/libstub.so"
 done
 llvm-strip -o "$OUT/sample_a64.stripped.elf" "$OUT/sample_a64.elf"
+llvm-strip -o "$OUT/sample_thumb.stripped.elf" "$OUT/sample_thumb.elf"
 # glibc-style PIE _start: main comes from a GOT slot that holds 0 on disk and is filled by an
 # R_AARCH64_RELATIVE relocation. --no-relax keeps the GOT load instead of turning it into adrp+add.
 clang --target=aarch64-linux-gnu -DGOT_START -O1 -fPIE -ffreestanding -fno-stack-protector \

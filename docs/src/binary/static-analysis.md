@@ -83,7 +83,7 @@ find *where* to look, then open those addresses there.
 ## Beyond x86: AArch64 and ARM
 
 With `--features multiarch` (included in release binaries) the same recursive-descent pipeline runs on AArch64 and
-32-bit ARM in ARM mode. The differences you will notice reading the output:
+32-bit ARM. The differences you will notice reading the output:
 
 - **Addresses are built in two steps.** AArch64 cannot load a 64-bit address in one instruction, so `adrp x0, #page`
   gives the 4 KiB page and `add x0, x0, #off` finishes the job. rex pairs them, which is how
@@ -94,5 +94,13 @@ With `--features multiarch` (included in release binaries) the same recursive-de
 - **Fixed-width instructions** make disassembly sync trivially, but there is no `call`/`ret` pair: calls are `bl`/`blr`
   and return is `ret` (a branch to `x30`).
 
-Known gaps: Thumb code (most 32-bit ARM Linux binaries are Thumb-2) is not followed, ARM32 PLT stubs and PC-relative
-literal pools are not resolved, and indirect branches are shown but not followed.
+- **32-bit ARM has two instruction sets.** Most 32-bit ARM Linux binaries are Thumb-2 (2- and 4-byte instructions)
+  with some ARM code (`_start`, the PLT). rex decodes each address in the right mode: from the ELF mapping symbols
+  (`$a`, `$t`, `$d`) when the binary has a symbol table, otherwise from bit 0 of function symbols and code pointers
+  (a Thumb function's address is stored as `address | 1`) and from `blx`, which always switches. Instructions inside
+  an `it` block are treated as conditional.
+- **Literal pools.** ARM32 code loads constants from words placed after the function: `ldr r0, [pc, #n]`, then
+  `add r0, pc` in position-independent code. rex reads the pool word and follows the addition, so the string shows
+  up beside the `add`. `movw`/`movt` pairs are followed too.
+
+Known gaps: indirect branches are shown but not followed.

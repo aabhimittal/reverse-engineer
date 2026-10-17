@@ -327,8 +327,12 @@ pub fn disasm(
         .bytes_at(a.data(), start)
         .ok_or_else(|| Error::Other(format!("{start:#x} is not in a mapped section")))?;
     let names = rex_binary::disasm::Names(std::sync::Arc::new(p.names.clone()));
-    let mut x = rex_binary::disasm::decoder_for(&b, &names)
+    let mut x = rex_binary::disasm::decoder_for(&b, a.data(), &names)
         .ok_or_else(|| Error::Unsupported(format!("{} control-flow analysis", b.arch.name())))?;
+    // Thumb functions found by discovery (stripped binaries have no mapping symbols to say so).
+    for &t in &p.thumb {
+        x.code_addr(t | 1);
+    }
     let insns = x.linear(bytes, start, count);
     let comments = insns
         .iter()
@@ -1347,6 +1351,18 @@ mod tests {
             at.contains("stp"),
             "address mode must decode AArch64, not x86: {at}"
         );
+    }
+
+    #[cfg(feature = "multiarch")]
+    #[test]
+    fn stripped_thumb_address_mode_decodes_thumb() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rex-binary/tests/fixtures/sample_thumb.stripped.elf");
+        let a = Artifact::from_bytes("sample_thumb.stripped.elf", std::fs::read(path).unwrap());
+        let o = AnalysisOptions::default();
+        // No mapping symbols: discovery learns the function is Thumb, and the listing uses that.
+        let at = disasm(&a, &o, None, Some(0x1030c), 4).unwrap();
+        assert!(at.contains("cbz") && at.contains("open-sesame"), "{at}");
     }
 
     #[test]

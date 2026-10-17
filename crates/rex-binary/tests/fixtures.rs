@@ -378,8 +378,65 @@ mod arm {
         func(&p, "checksum");
         let main = func(&p, "main");
         assert!(main.calls.contains(&check.addr));
-        // Known gap: ARM32 PIC code reaches strings through literal pools holding pc-relative
-        // offsets (`ldr r0, [pc, #n]; add r0, pc, r0`), which are not resolved to the string.
+        // PIC code reaches strings through literal pools of pc-relative offsets
+        // (`ldr r0, [pc, #n]; add r0, pc, r0`).
+        assert!(
+            main.strings.iter().any(|s| s == "access granted"),
+            "{:?}",
+            main.strings
+        );
+        // ARM PLT entries (`add ip, pc, …; ldr pc, [ip, #n]!`) are named after their import.
+        assert!(p.stubs.values().any(|n| n == "stub_log"), "{:?}", p.stubs);
+        assert!(main.imports_called.iter().any(|n| n == "stub_log"));
+    }
+
+    #[test]
+    fn thumb2_functions_are_decoded_in_thumb_mode() {
+        // ARM-mode _start and PLT, Thumb-2 functions: a mixed binary like most armhf builds.
+        let (b, p) = program("sample_thumb.elf");
+        assert!(!p.unsupported_arch);
+        assert_eq!(
+            b.arm_map.iter().find(|m| m.0 == b.entry).map(|m| m.1),
+            Some('a')
+        );
+        let check = func(&p, "check");
+        assert_eq!(
+            check.addr & 1,
+            0,
+            "the Thumb bit is not part of the address"
+        );
+        assert!(check.cyclomatic() >= 3, "{}", check.cyclomatic());
+        // Thumb instructions are 2 or 4 bytes; decoding them as ARM would give 4-byte garbage.
+        assert!(check.blocks[0].insns.iter().any(|i| i.bytes.len() == 2));
+        func(&p, "checksum");
+        let main = func(&p, "main");
+        assert!(main.calls.contains(&check.addr));
+        assert!(
+            main.strings.iter().any(|s| s == "access granted"),
+            "{:?}",
+            main.strings
+        );
+        // Thumb main calls the ARM PLT through `blx`.
+        assert!(main.imports_called.iter().any(|n| n == "stub_log"));
+        let start = func(&p, "_start");
+        assert!(
+            start
+                .imports_called
+                .iter()
+                .any(|n| n == "__libc_start_main")
+        );
+    }
+
+    #[test]
+    fn stripped_thumb2_main_is_found_through_its_got_slot() {
+        // glibc PIE _start: `ldr r0, [sl, ip]` loads main | 1 from main's GOT slot.
+        let (_, p) = program("sample_thumb.stripped.elf");
+        let main = p.main.expect("main inferred");
+        assert_eq!(main & 1, 0);
+        let f = &p.functions[&main];
+        assert_eq!(f.name, "main");
+        assert!(f.strings.iter().any(|s| s == "denied"), "{:?}", f.strings);
+        assert!(!f.calls.is_empty(), "main's Thumb code was followed");
     }
 }
 
