@@ -1,0 +1,257 @@
+---
+import Base from "../layouts/Base.astro";
+import rex from "../data/rex.json";
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Colour rex's own text output the way a terminal would show it.
+const paint = (text: string) =>
+  esc(text)
+    .split("\n")
+    .map((l) =>
+      l
+        .replace(/^(\s*)(HIGH|CRITICAL)(\s)/, '$1<span class="hi">$2</span>$3')
+        .replace(/^(\s*)(MEDIUM)(\s)/, '$1<span class="me">$2</span>$3')
+        .replace(/^(\s*)(LOW|INFO)(\s)/, '$1<span class="dim">$2</span>$3')
+        .replace(/(✘ disabled)/, '<span class="hi">$1</span>')
+        .replace(/(✔ enabled)/, '<span class="ac">$1</span>')
+        .replace(/^(\s+)(•.*)$/, '$1<span class="dim">$2</span>')
+        .replace(/(;.*)$/, '<span class="dim">$1</span>')
+        .replace(/\b(main\.\w+)/g, '<span class="ac">$1</span>'),
+    )
+    .join("\n");
+
+const installs = [
+  { label: "Script", cmd: "curl -fsSL https://raw.githubusercontent.com/aabhimittal/reverse-engineer/main/install.sh | sh" },
+  { label: "Cargo", cmd: "cargo install --git https://github.com/aabhimittal/reverse-engineer rex-cli --features multiarch" },
+  { label: "binstall", cmd: "cargo binstall --git https://github.com/aabhimittal/reverse-engineer rex-cli" },
+];
+
+const formats = [
+  { name: "ELF · PE · Mach-O", what: "checksec, imports, 50+ ATT&CK capability rules, strings, TLSH, YARA-X" },
+  { name: "x86, x64, AArch64, ARM", what: "functions, CFGs, call graph and xrefs, PLT and `main` recovered in stripped binaries" },
+  { name: "Go", what: "every function name from the pclntab, even stripped; modules, dependencies, build flags" },
+  { name: ".NET", what: "assembly, references, types, P/Invoke imports fed to the capability rules" },
+  { name: "WebAssembly", what: "sections, WASI reach, per-import call sites, instruction disassembly" },
+  { name: "Electron app.asar", what: "BrowserWindow security flags, the IPC channel table, secrets, safe extraction" },
+  { name: "Android APK", what: "binary manifest, exported components, deep links, DEX and risky APIs" },
+  { name: "Firmware", what: "carving with exact sizes, entropy profile, embedded keys and credentials" },
+  { name: "HAR traffic", what: "OpenAPI 3.1 with templated paths and inferred schemas, plus a passive audit" },
+  { name: "JS bundles", what: "endpoints, secrets and sinks; source maps unpacked without path traversal" },
+  { name: "Codebases", what: "symbols, import graph, read-this-first ranking, routes, hotspots" },
+  { name: "Two builds", what: "`rex diff` for functions, `rex compare` for whole reports with CI gating" },
+];
+---
+
+<Base
+  title="rex: reverse engineer anything, offline"
+  description="One static binary that takes apart executables, firmware, Android and Electron apps, WebAssembly, Go and .NET programs and web traffic, for people and for AI agents."
+>
+  <section class="hero wrap">
+    <div class="copy">
+      <p class="eyebrow">{rex.version}</p>
+      <h1>Find out what a program does before you run it.</h1>
+      <p class="lede">
+        rex reads executables, firmware, Android and Electron apps, WebAssembly, Go and .NET programs and web traffic,
+        and tells you what they can do. It runs offline as one static binary, it never executes what it inspects, and
+        your AI agent can drive it over MCP.
+      </p>
+      <div class="install" aria-label="Install">
+        {installs.map((i, n) => (
+          <details class="pick" open={n === 0}>
+            <summary>{i.label}</summary>
+            <div class="line"><code>{i.cmd}</code><button type="button" data-copy={i.cmd}>Copy</button></div>
+          </details>
+        ))}
+      </div>
+      <p class="cta">
+        <a class="btn" href={`${base}/demo/`}>Open the live demo</a>
+        <a class="ghost" href={`${base}/docs/getting-started.html`}>Read the guide</a>
+      </p>
+    </div>
+    <div class="term hero-term" aria-label="Real rex output">
+      <div class="cmd">{rex.hero.command}</div>
+      <pre set:html={paint(rex.hero.findings.split("\n").slice(0, 16).join("\n"))}></pre>
+    </div>
+  </section>
+
+  <section class="wrap band">
+    <h2>What it reads</h2>
+    <p class="sub">Each of these is a built-in analyzer, not a wrapper around another tool.</p>
+    <ul class="grid">
+      {formats.map((f) => (
+        <li>
+          <h3>{f.name}</h3>
+          <p set:html={esc(f.what).replace(/`([^`]+)`/g, "<code>$1</code>")}></p>
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  {rex.go && (
+    <section class="wrap band split">
+      <div class="copy">
+        <h2>Stripped is not the same as unnamed</h2>
+        <p>
+          Go keeps its own function table for stack traces, and <code>-ldflags="-s -w"</code> cannot remove it. rex
+          reads it on every architecture Go targets, so a stripped arm64 binary still lists <code>main.main</code>,
+          <code>main.check</code> and the rest of the program by name, with its Go version and build flags.
+        </p>
+        <p>
+          Function discovery explores the program's own code before the Go runtime, so the interesting part is never
+          lost to the <code>--max-functions</code> budget.
+        </p>
+      </div>
+      <div class="stack">
+        <div class="term">
+          <div class="cmd">{rex.go.command}</div>
+          <pre set:html={paint(rex.go.overview)}></pre>
+        </div>
+        <div class="term">
+          <div class="cmd">rex disasm hello-arm64 -F main.check</div>
+          <pre set:html={paint(rex.go.disasm)}></pre>
+        </div>
+      </div>
+    </section>
+  )}
+
+  <section class="wrap band">
+    <h2>See it work on real files</h2>
+    <p class="sub">
+      Nine lab samples, from a hardened crackme to an Electron app, a WebAssembly module and a firmware blob. Every
+      finding, table and control-flow graph below came from a real <code>rex</code> run when this site was built.
+    </p>
+    <div class="demo-frame">
+      <iframe src={`${base}/demo/`} title="rex lab bench: findings, disassembly and CFGs for nine samples" loading="lazy"></iframe>
+    </div>
+    <p class="note"><a href={`${base}/demo/`}>Open the demo full screen</a></p>
+  </section>
+
+  <section class="wrap band split">
+    <div class="copy">
+      <h2>Built to be driven by an agent</h2>
+      <p>
+        <code>rex setup</code> finds Claude Code, Claude Desktop, Cursor, Gemini CLI and Codex CLI on your machine and
+        registers rex as an MCP server, backing up each config first. Your agent gets every analysis as a tool, plus
+        guided investigations:
+      </p>
+      <ul class="prompts">
+        {rex.prompts.map((p) => (
+          <li><code>{p.name}</code> {p.description}</li>
+        ))}
+      </ul>
+    </div>
+    <div class="term">
+      <div class="cmd">rex setup --dry-run</div>
+      <pre set:html={paint(rex.agents.text)}></pre>
+    </div>
+  </section>
+
+  <section class="wrap band split">
+    <div class="copy">
+      <h2>A CI step, not just a viewer</h2>
+      <p>
+        Save a report per build and compare them. New or escalated findings are raised again, so
+        <code>--fail-on high</code> stops a release that lost NX or picked up an injection API. SARIF output goes
+        straight to GitHub code scanning.
+      </p>
+    </div>
+    <div class="term">
+      <div class="cmd">{rex.compare.command}</div>
+      <pre set:html={paint(rex.compare.text)}></pre>
+    </div>
+  </section>
+
+  <section class="wrap band">
+    <h2>Why rex</h2>
+    <div class="why">
+      <div>
+        <h3>Nothing else to install</h3>
+        <p>Parsing, disassembly, control-flow recovery and rules are built in. No Ghidra, IDA, Python or Java needed, so it runs in a container, in CI or behind an MCP server.</p>
+      </div>
+      <div>
+        <h3>Safe on hostile input</h3>
+        <p>Every parser is fuzzed in CI and bounded in memory and time. FIFOs and devices are refused, zip bombs are capped, and file text can't drive your terminal.</p>
+      </div>
+      <div>
+        <h3>Evidence, not verdicts</h3>
+        <p>Each finding prints the imports, strings or flag values that triggered it, so you can check it. Treat findings as leads.</p>
+      </div>
+      <div>
+        <h3>Honest about limits</h3>
+        <p>There's no decompiler: use the addresses rex gives you in Ghidra. Thumb, MIPS, PowerPC and RISC-V get linear disassembly only.</p>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<script>
+  for (const b of document.querySelectorAll<HTMLButtonElement>("button[data-copy]")) {
+    b.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy ?? "");
+        b.textContent = "Copied";
+      } catch {
+        const code = b.previousElementSibling;
+        if (code) getSelection()?.selectAllChildren(code);
+        b.textContent = "Select";
+      }
+      setTimeout(() => (b.textContent = "Copy"), 1500);
+    });
+  }
+  // One install method open at a time.
+  const picks = [...document.querySelectorAll<HTMLDetailsElement>(".install details")];
+  for (const d of picks) d.addEventListener("toggle", () => d.open && picks.forEach((o) => o !== d && (o.open = false)));
+</script>
+
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 40px; align-items: center; padding-block: 56px 32px; }
+  .eyebrow { font: 500 0.8rem var(--font-mono); color: var(--accent); margin: 0 0 10px; }
+  .hero h1 { font-size: clamp(2.1rem, 4.4vw, 3.3rem); font-weight: 700; letter-spacing: -0.01em; }
+  .lede { font-size: 1.08rem; color: var(--muted); max-width: 56ch; margin: 18px 0 22px; }
+  .install { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .hero .copy, .pick { min-width: 0; }
+  .pick summary { cursor: pointer; font: 500 0.88rem var(--font-display); color: var(--muted); list-style: none; display: inline-block; padding: 2px 0; }
+  .pick summary::-webkit-details-marker { display: none; }
+  .pick[open] summary { color: var(--ink); }
+  .pick summary::before { content: "▸ "; color: var(--accent); }
+  .pick[open] summary::before { content: "▾ "; }
+  .line { display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; min-width: 0; }
+  .line code { flex: 1; min-width: 0; padding: 9px 12px; font-size: 0.8rem; overflow-x: auto; white-space: nowrap; }
+  .line button { border: 0; border-left: 1px solid var(--line); background: var(--surface-2); color: var(--ink); padding: 0 14px; font: 500 0.82rem var(--font-body); cursor: pointer; border-radius: 0 6px 6px 0; }
+  .line button:hover { background: var(--accent-soft); }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+  .btn { background: var(--accent); color: var(--on-accent); padding: 10px 18px; border-radius: 6px; text-decoration: none; font: 600 0.98rem var(--font-display); }
+  .ghost { padding: 10px 6px; font: 500 0.98rem var(--font-display); }
+  .hero-term pre { max-height: 420px; }
+
+  .band { padding-block: 44px; border-top: 1px solid var(--line); }
+  .band h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 600; }
+  .sub { color: var(--muted); max-width: 68ch; margin: 10px 0 24px; }
+  .grid { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .grid li { background: var(--surface); padding: 16px 18px; }
+  .grid h3 { font-size: 1.05rem; font-weight: 600; color: var(--accent); }
+  .grid p { margin: 6px 0 0; font-size: 0.92rem; color: var(--muted); }
+  .grid code, .copy code, .why code, .sub code { font-size: 0.85em; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+
+  .split { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 36px; align-items: start; }
+  .copy p { max-width: 62ch; }
+  .stack { display: grid; gap: 14px; min-width: 0; }
+  .prompts { padding-left: 18px; color: var(--muted); font-size: 0.93rem; }
+  .prompts li { margin: 4px 0; }
+  .prompts code { color: var(--ink); }
+
+  .demo-frame { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .demo-frame iframe { display: block; width: 100%; height: 760px; border: 0; }
+  .note { font-size: 0.9rem; }
+
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 24px; margin-top: 20px; }
+  .why h3 { font-size: 1.1rem; font-weight: 600; }
+  .why p { color: var(--muted); font-size: 0.94rem; margin: 6px 0 0; }
+
+  @media (max-width: 860px) {
+    .hero, .split { grid-template-columns: minmax(0, 1fr); }
+    .hero { padding-top: 32px; }
+    .demo-frame iframe { height: 640px; }
+  }
+</style>

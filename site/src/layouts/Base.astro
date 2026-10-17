@@ -1,0 +1,138 @@
+---
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <div class="wrap bar">
+        <a class="brand" href={`${base}/`}><b>rex</b><span>reverse engineer anything, offline</span></a>
+        <nav aria-label="Site">
+          <a href={`${base}/demo/`}>Demo</a>
+          <a href={`${base}/docs/`}>Docs</a>
+          <a href={`${base}/docs/showcase.html`}>Showcase</a>
+          <a href={`${base}/docs/faq.html`}>FAQ</a>
+          <a href="https://github.com/aabhimittal/reverse-engineer">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main"><slot /></main>
+    <footer class="foot">
+      <div class="wrap">
+        <p>rex is MIT licensed. It never executes the files it analyses.</p>
+        <p><a href="https://github.com/aabhimittal/reverse-engineer">github.com/aabhimittal/reverse-engineer</a></p>
+      </div>
+    </footer>
+  </body>
+</html>
+
+<style is:global>
+  /* Layout: a lab bench. Narrow reading column for prose, wide panels for real tool output. */
+  :root {
+    --bg: #eef2f4;
+    --surface: #ffffff;
+    --surface-2: #f5f8f9;
+    --ink: #14202b;
+    --muted: #566774;
+    --line: #d3dde3;
+    --accent: #0a6c80;
+    --accent-soft: #dcf0f3;
+    --on-accent: #ffffff;
+    --term-bg: #0f171e;
+    --term-ink: #dbe6ec;
+    --term-dim: #7f95a3;
+    --term-accent: #54c7d8;
+    --sev-high: #c2310f;
+    --sev-med: #9a6700;
+    --ok: #237a3b;
+    --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c1218;
+      --surface: #131c24;
+      --surface-2: #19242d;
+      --ink: #e4ebef;
+      --muted: #92a3af;
+      --line: #26343f;
+      --accent: #54c7d8;
+      --accent-soft: #123740;
+      --on-accent: #06242a;
+      --term-bg: #080d12;
+      --sev-high: #ff8a63;
+      --sev-med: #e8b23c;
+      --ok: #5fd07f;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 16px/1.6 var(--font-body);
+  }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  h1, h2, h3 { font-family: var(--font-display); line-height: 1.15; margin: 0; text-wrap: balance; }
+  code, pre, kbd { font-family: var(--font-mono); }
+  .wrap { max-width: 1120px; margin-inline: auto; padding-inline: 20px; }
+  .skip { position: absolute; left: -999px; }
+  .skip:focus { left: 12px; top: 12px; background: var(--surface); padding: 6px 10px; z-index: 10; }
+
+  .top { border-bottom: 1px solid var(--line); background: var(--surface); position: sticky; top: 0; z-index: 5; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; padding-block: 12px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; color: var(--ink); text-decoration: none; }
+  .brand b { font: 700 1.5rem var(--font-display); color: var(--accent); }
+  .brand span { font: 400 0.8rem var(--font-mono); color: var(--muted); }
+  nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  nav a { color: var(--ink); text-decoration: none; font: 500 0.95rem var(--font-display); }
+  nav a:hover { color: var(--accent); }
+
+  .foot { border-top: 1px solid var(--line); margin-top: 72px; padding-block: 28px; color: var(--muted); font-size: 0.9rem; }
+  .foot p { margin: 4px 0; }
+
+  /* Terminal panels hold verbatim rex output: they scroll sideways, the page never does. */
+  .term {
+    background: var(--term-bg);
+    color: var(--term-ink);
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    min-width: 0;
+    overflow: hidden;
+  }
+  .term .cmd { padding: 10px 14px; border-bottom: 1px solid #1f2c36; font: 500 0.82rem var(--font-mono); color: var(--term-ink); overflow-x: auto; white-space: nowrap; }
+  .term .cmd::before { content: "$ "; color: var(--term-accent); }
+  .term pre { margin: 0; padding: 12px 14px 14px; font-size: 0.78rem; line-height: 1.55; overflow-x: auto; color: var(--term-ink); }
+  .term .dim { color: var(--term-dim); }
+  .term .hi { color: #ff8a63; font-weight: 500; }
+  .term .me { color: #e8b23c; font-weight: 500; }
+  .term .ac { color: var(--term-accent); }
+</style>
