@@ -23,6 +23,7 @@ FX = "crates/rex-binary/tests/fixtures"
 p = argparse.ArgumentParser()
 p.add_argument("--rex", default=os.path.join(ROOT, "target/debug/rex"))
 p.add_argument("--out", default=os.path.join(ROOT, "demo.html"))
+p.add_argument("--site-data", help="also write the website's data file (real output for the landing page)")
 args = p.parse_args()
 
 ENV = dict(os.environ, NO_COLOR="1")
@@ -228,7 +229,90 @@ blob = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</",
 if "/*__REX_DATA__*/null" not in page:
     sys.exit("docs/demo/template.html has no /*__REX_DATA__*/null placeholder")
 page = page.replace("/*__REX_DATA__*/null", blob)
+# The template is a page body; make it a complete standalone document for the website.
+page = (
+    '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    '<meta name="description" content="Real rex output on nine lab samples: findings, disassembly and control-flow graphs.">\n'
+    "</head>\n<body>\n" + page + "\n</body>\n</html>\n"
+)
 os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 with open(args.out, "w", encoding="utf-8") as f:
     f.write(page)
 print(f"wrote {args.out} ({len(page)//1024} KiB) from {version}; {sum(len(s['findings']) for s in samples)} findings across {len(samples)} samples")
+
+
+def section(text, title):
+    """Lines of one `── title` section from rex's text output."""
+    out, on = [], False
+    for line in text.splitlines():
+        if line.startswith("── "):
+            on = line[3:].strip().startswith(title)
+            continue
+        if on:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
+def go_sample():
+    """A stripped Go binary for linux/arm64, built on the fly when Go is installed."""
+    import shutil
+
+    if not shutil.which("go"):
+        return None
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "main.go"), "w") as f:
+        f.write('package main\n\nimport "os"\n\n//go:noinline\nfunc check(pw string) bool { return pw == "open-sesame" }\n\n'
+                'func main() {\n\tif len(os.Args) > 1 && check(os.Args[1]) {\n\t\tprintln("granted")\n\t}\n}\n')
+    with open(os.path.join(d, "go.mod"), "w") as f:
+        f.write("module example.com/hello\n\ngo 1.21\n")
+    out = os.path.join(d, "hello-arm64")
+    env = dict(os.environ, GOOS="linux", GOARCH="arm64", CGO_ENABLED="0", GOFLAGS="-mod=mod", GOCACHE=os.path.join(d, "cache"))
+    r = subprocess.run(["go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, "."], cwd=d, env=env, capture_output=True)
+    if r.returncode != 0:
+        return None
+    info = run("info", out)
+    funcs = run("functions", "--max-rows", "0", out)
+    names = [l for l in funcs.splitlines() if " main." in l]
+    return {
+        "command": "rex info hello-arm64   # GOOS=linux GOARCH=arm64 go build -ldflags='-s -w'",
+        "overview": "\n".join(l for l in section(info, "Binary overview").splitlines()
+                              if any(k in l for k in ("Format", "Architecture", "Stripped", "Go ", "Symbols"))),
+        "main": "\n".join(names),
+        "disasm": "\n".join(run("disasm", out, "-F", "main.check").splitlines()[:9]),
+    }
+
+
+if args.site_data:
+    vuln = run("analyze", f"{FX}/vuln.elf")
+    good_json = run("analyze", "-f", "json", f"{FX}/crackme.elf")
+    bad_json = run("analyze", "-f", "json", f"{FX}/vuln.elf")
+    tmpd = tempfile.mkdtemp()
+    for n, t in (("old.json", good_json), ("new.json", bad_json)):
+        with open(os.path.join(tmpd, n), "w") as f:
+            f.write(t)
+    cmp = run("compare", "--fail-on", "high", os.path.join(tmpd, "old.json"), os.path.join(tmpd, "new.json"))
+    site = {
+        "version": version,
+        "hero": {
+            "command": f"rex analyze {FX}/vuln.elf".replace(FX + "/", ""),
+            "findings": section(vuln, "Findings").strip("\n"),
+            "mitigations": section(vuln, "Security mitigations"),
+        },
+        "compare": {
+            "command": "rex compare crackme.json vuln.json --fail-on high",
+            "text": section(cmp, "Findings that changed"),
+        },
+        "go": go_sample(),
+        "agents": next(v for s_ in samples if s_["id"] == "agents" for v in s_["views"]),
+        "prompts": [{"name": n, "description": d} for n, d in PROMPTS],
+        "samples": [{"id": s_["id"], "title": s_["title"], "kind": s_["kind"], "findings": len(s_["findings"])}
+                    for s_ in samples if s_["id"] != "agents"],
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(args.site_data)), exist_ok=True)
+    with open(args.site_data, "w", encoding="utf-8") as f:
+        json.dump(site, f, ensure_ascii=False, indent=1)
+    print(f"wrote {args.site_data}" + ("" if site["go"] else " (no Go toolchain: Go sample skipped)"))
+

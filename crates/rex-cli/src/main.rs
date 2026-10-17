@@ -49,6 +49,9 @@ struct Global {
     /// Maximum rows per table (0 = unlimited).
     #[arg(long, global = true, default_value_t = 50)]
     max_rows: usize,
+    /// Stop function discovery after this many functions (large binaries are reported as partial).
+    #[arg(long, global = true, default_value_t = 5000)]
+    max_functions: usize,
     /// Refuse inputs larger than this many MiB.
     #[arg(long, global = true, default_value_t = 1024)]
     max_size: u64,
@@ -217,6 +220,9 @@ enum Cmd {
     },
     /// Function-level diff of two binaries (patch analysis).
     Diff { old: PathBuf, new: PathBuf },
+    /// Compare two saved `rex analyze -f json` reports (what changed between builds or runs).
+    /// With --fail-on, new or escalated findings fail the run.
+    Compare { old: PathBuf, new: PathBuf },
     /// Web & API reverse engineering.
     #[command(subcommand)]
     Web(WebCmd),
@@ -429,6 +435,7 @@ fn run(cli: Cli) -> Result<i32> {
     let ctx = Ctx {
         opts: AnalysisOptions {
             max_rows: cli.global.max_rows,
+            max_functions: cli.global.max_functions,
             ..Default::default()
         },
         g: cli.global,
@@ -544,6 +551,12 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Carve { path, extract } => {
             let a = ctx.load(&path)?;
             ctx.emit(&[rex_engine::carve_report(&a, extract.as_deref())?])
+        }
+        Cmd::Compare { old, new } => {
+            let read = |p: &PathBuf| {
+                std::fs::read_to_string(p).with_context(|| format!("cannot read {}", p.display()))
+            };
+            ctx.emit(&[rex_engine::compare_reports(&read(&old)?, &read(&new)?)?])
         }
         Cmd::Diff { old, new } => {
             let (a, b) = (ctx.load(&old)?, ctx.load(&new)?);

@@ -1,0 +1,100 @@
+{
+ "version": "rex 0.1.0",
+ "hero": {
+  "command": "rex analyze vuln.elf",
+  "findings": "  HIGH     NX: disabled  BIN-MITIGATION-NX\n           Injected data on the stack/heap can be executed as code (classic shellcode).\n           • PT_GNU_STACK is RWX (executable stack)\n  HIGH     Calls memory-unsafe C library functions  BIN-UNSAFE-API\n           Unbounded copies / formatting (CWE-676, CWE-120). `gets` can never be used safely.\n           • gets ← main\n           • strcpy ← greet\n           • system ← win\n  MEDIUM   PIE: disabled  BIN-MITIGATION-PIE\n           Code is loaded at a fixed address, so ROP gadgets have predictable addresses.\n           • fixed load address (ET_EXEC)\n  MEDIUM   RELRO: disabled  BIN-MITIGATION-RELRO\n           The GOT stays writable: a write primitive can redirect library calls.\n           • no PT_GNU_RELRO\n  MEDIUM   Stack canary: disabled  BIN-MITIGATION-STACK-CANARY\n           Stack buffer overflows can overwrite return addresses undetected.\n           • no __stack_chk_fail reference\n  INFO     FORTIFY_SOURCE: disabled  BIN-MITIGATION-FORTIFY_SOURCE\n           Compiled without -D_FORTIFY_SOURCE (or no fortifiable calls).\n           • no *_chk functions\n  INFO     create process  CAP-PROC-CREATE\n           namespace: host-interaction/process/create\n           • api: system\n           ATT&CK: T1106\n\n7 findings (2 high, 3 medium, 2 info) · 16 ms",
+  "mitigations": "  mitigation      status      detail\n  NX              ✘ disabled  PT_GNU_STACK is RWX (executable stack)\n  PIE             ✘ disabled  fixed load address (ET_EXEC)\n  RELRO           ✘ disabled  no PT_GNU_RELRO\n  Stack canary    ✘ disabled  no __stack_chk_fail reference\n  FORTIFY_SOURCE  ✘ disabled  no *_chk functions\n  No RPATH        ✔ enabled   no RPATH/RUNPATH\n  CET IBT         ✔ enabled   indirect-branch tracking (endbr64 landing pads)\n  CET SHSTK       ✔ enabled   hardware shadow stack"
+ },
+ "compare": {
+  "command": "rex compare crackme.json vuln.json --fail-on high",
+  "text": "  change   severity  id                             title\n  added    info      BIN-MITIGATION-FORTIFY_SOURCE  FORTIFY_SOURCE: disabled\n  added    high      BIN-MITIGATION-NX              NX: disabled\n  added    medium    BIN-MITIGATION-PIE             PIE: disabled\n  added    medium    BIN-MITIGATION-RELRO           RELRO: disabled\n  added    high      BIN-UNSAFE-API                 Calls memory-unsafe C library functions\n  added    info      CAP-PROC-CREATE                create process\n  removed  info      BIN-NETWORK-IOC                1 network indicator(s) (URLs/IPs)"
+ },
+ "go": {
+  "command": "rex info hello-arm64   # GOOS=linux GOARCH=arm64 go build -ldflags='-s -w'",
+  "overview": "  Format             ELF 64-bit\n  Architecture       aarch64\n  Symbols            1578 (stripped)\n  Go version         go1.24.7\n  Go main package    example.com/hello\n  Go function table  1578 functions (1578 not in the symbol table)",
+  "main": "  0x877e0  main.check                                                    84    6       4           1        0\n  0x87840  main.main                                                     112   6       4           0        5",
+  "disasm": "; ── main.check @ 0x877e0  (84 bytes, 6 blocks, cyclomatic 4)\n; called from: main.main\n       877e0  e0 07 00 f9              str x0, [sp, #8]\n       877e4  3f 2c 00 f1              cmp x1, #0xb\n       877e8  01 02 00 54              b.ne #0x87828\n              ; true→87828  false→877ec\nloc_877ec:\n       877ec  01 00 40 f9              ldr x1, [x0]\n       877f0  e2 0d 8e d2              mov x2, #0x706f"
+ },
+ "agents": {
+  "type": "text",
+  "label": "rex setup --dry-run",
+  "command": "rex setup --dry-run",
+  "text": "- Claude Code: skipped, not detected (use --agent to force)\n- Claude Desktop: skipped, not detected (use --agent to force)\n→ Cursor: would add `rex` to ~/.cursor/mcp.json\n→ Cursor skill: would write ~/.agents/skills/rex/SKILL.md\n→ Gemini CLI: would add `rex` to ~/.gemini/settings.json\n→ Gemini CLI skill: would write ~/.agents/skills/rex/SKILL.md\n→ Codex CLI: would add `rex` in ~/.codex/config.toml\n→ Codex CLI skill: would write ~/.agents/skills/rex/SKILL.md"
+ },
+ "prompts": [
+  {
+   "name": "triage_binary",
+   "description": "Triage an unknown executable or firmware image and report what it is, what it can do and where to look next"
+  },
+  {
+   "name": "patch_diff",
+   "description": "Compare two builds of a binary and find what a security update changed"
+  },
+  {
+   "name": "reverse_api",
+   "description": "Turn a HAR traffic capture into an API spec and a security review"
+  },
+  {
+   "name": "map_codebase",
+   "description": "Build a mental model of an unfamiliar repository"
+  },
+  {
+   "name": "audit_apk",
+   "description": "Review an Android app's manifest, components and risky behaviours"
+  },
+  {
+   "name": "audit_electron",
+   "description": "Review an Electron app (app.asar) for window-security mistakes, IPC exposure, secrets and risky dependencies"
+  }
+ ],
+ "samples": [
+  {
+   "id": "crackme",
+   "title": "Hardened crackme",
+   "kind": "ELF · x86-64",
+   "findings": 2
+  },
+  {
+   "id": "vuln",
+   "title": "Binary with no mitigations",
+   "kind": "ELF · x86-64",
+   "findings": 7
+  },
+  {
+   "id": "winpe",
+   "title": "Windows PE with injection imports",
+   "kind": "PE · x86-64",
+   "findings": 5
+  },
+  {
+   "id": "asar",
+   "title": "Electron app",
+   "kind": "Electron ASAR",
+   "findings": 6
+  },
+  {
+   "id": "wasm",
+   "title": "WebAssembly module",
+   "kind": "WebAssembly",
+   "findings": 3
+  },
+  {
+   "id": "arm64",
+   "title": "AArch64 binary",
+   "kind": "ELF · AArch64",
+   "findings": 3
+  },
+  {
+   "id": "har",
+   "title": "Browser traffic",
+   "kind": "HAR capture",
+   "findings": 11
+  },
+  {
+   "id": "firmware",
+   "title": "Firmware image",
+   "kind": "Firmware blob",
+   "findings": 7
+  }
+ ]
+}

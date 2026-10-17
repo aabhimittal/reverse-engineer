@@ -29,6 +29,15 @@ Function discovery, control-flow graphs, call graphs and function-level diffing 
 MIPS, PowerPC and RISC-V get linear disassembly only. Everything format-level (headers, imports, checksec, strings,
 capabilities) works on all supported formats.
 
+Go binaries are named on every architecture Go targets, because rex reads Go's own function table (pclntab), which
+stripping does not remove: a stripped arm64 or RISC-V Go binary lists `main.main`, `net/http.(*Client).Do` and the
+rest by name, even where no CFG is built.
+
+**How is rex different from tools that drive Ghidra or IDA?**
+rex does its own parsing, disassembly and control-flow recovery in one static binary, so it runs in CI, in a container
+or behind an MCP server with nothing else installed. It does not decompile to C; when you need pseudocode, open the
+binary in Ghidra with the addresses rex gives you.
+
 **Can I trust the findings?**
 Treat them as leads. Rules fire on evidence they print (imports, strings, flag values), and every heuristic can be
 wrong in both directions: a benign tool can import `CreateRemoteThread`, and a malicious sample can hide its

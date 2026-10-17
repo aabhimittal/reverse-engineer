@@ -1,8 +1,9 @@
 use crate::detect::{ArtifactKind, detect_bytes, detect_path};
 use crate::error::{Error, Result};
 use crate::hash;
+use std::any::Any;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Default maximum input size (1 GiB). Hostile inputs can be huge; we refuse
 /// rather than exhaust memory.
@@ -18,6 +19,18 @@ pub struct Artifact {
     data: Vec<u8>,
     kind: ArtifactKind,
     sha256: OnceLock<String>,
+    memo: Memo,
+}
+
+/// Per-artifact cache of expensive derived values (one per type), so the analyzers that run over
+/// the same input share one parse instead of each re-parsing a 200 MB binary.
+#[derive(Default)]
+struct Memo(Mutex<Vec<Arc<dyn Any + Send + Sync>>>);
+
+impl std::fmt::Debug for Memo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Memo")
+    }
 }
 
 impl Artifact {
@@ -40,7 +53,15 @@ impl Artifact {
                 data: Vec::new(),
                 kind: ArtifactKind::Directory,
                 sha256: OnceLock::new(),
+                memo: Memo::default(),
             });
+        }
+        if !meta.is_file() {
+            // FIFOs block, and /dev/zero-style devices never end; neither is a file to analyse.
+            return Err(Error::Unsupported(format!(
+                "{} is not a regular file (FIFO, socket or device)",
+                path.display()
+            )));
         }
         if meta.len() > max_size {
             return Err(Error::TooLarge {
@@ -48,7 +69,22 @@ impl Artifact {
                 limit: max_size,
             });
         }
-        let data = std::fs::read(path).map_err(io)?;
+        // Read through a cap as well: /proc files report size 0, and a file can grow after stat.
+        let mut data = Vec::with_capacity(meta.len().min(max_size) as usize);
+        {
+            use std::io::Read;
+            std::fs::File::open(path)
+                .map_err(io)?
+                .take(max_size.saturating_add(1))
+                .read_to_end(&mut data)
+                .map_err(io)?;
+        }
+        if data.len() as u64 > max_size {
+            return Err(Error::TooLarge {
+                size: data.len() as u64,
+                limit: max_size,
+            });
+        }
         let kind = detect_path(path, &data);
         Ok(Self {
             name,
@@ -56,6 +92,7 @@ impl Artifact {
             data,
             kind,
             sha256: OnceLock::new(),
+            memo: Memo::default(),
         })
     }
 
@@ -69,6 +106,7 @@ impl Artifact {
             data,
             kind,
             sha256: OnceLock::new(),
+            memo: Memo::default(),
         }
     }
 
@@ -101,6 +139,26 @@ impl Artifact {
     /// Size in bytes.
     pub fn size(&self) -> u64 {
         self.data.len() as u64
+    }
+
+    /// The value of type `T` derived from this artifact, computed once on first use. Analyzers
+    /// run in parallel; a second caller waits for the first instead of computing it again.
+    pub fn memo<T: Any + Send + Sync>(&self, compute: impl FnOnce(&Self) -> T) -> Arc<T> {
+        let slot: Arc<OnceLock<Arc<T>>> = {
+            let mut v = self.memo.0.lock().unwrap_or_else(|e| e.into_inner());
+            match v
+                .iter()
+                .find_map(|x| Arc::clone(x).downcast::<OnceLock<Arc<T>>>().ok())
+            {
+                Some(s) => s,
+                None => {
+                    let s = Arc::new(OnceLock::new());
+                    v.push(s.clone());
+                    s
+                }
+            }
+        };
+        slot.get_or_init(|| Arc::new(compute(self))).clone()
     }
 
     /// SHA-256 (cached).

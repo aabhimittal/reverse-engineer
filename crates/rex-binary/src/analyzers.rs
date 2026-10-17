@@ -50,7 +50,7 @@ impl Analyzer for Info {
         10
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let mut out = AnalyzerOutput::new();
         let mut kv: Vec<(String, String)> = vec![
             (
@@ -90,7 +90,140 @@ impl Analyzer for Info {
                 format!("{} bytes at {:#x}", a.size() - o, o),
             ));
         }
-        out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&b));
+        out.section(Section::kv("binary.overview", "Binary overview", kv).with_data(&*b));
+
+        // The manifest decides how Windows starts the program: an elevation prompt, or UI access to
+        // other processes' windows (UIPI bypass) for signed binaries in secure locations.
+        let extra = |k: &str| {
+            b.extras
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        if let Some(l @ ("requireAdministrator" | "highestAvailable")) =
+            extra("Manifest: requestedExecutionLevel")
+        {
+            out.finding(
+                Finding::new(
+                    "BIN-PE-MANIFEST-ELEVATION",
+                    Severity::Info,
+                    "privilege",
+                    format!("Manifest requests elevation ({l})"),
+                )
+                .describe("Windows shows a UAC prompt and runs the program as administrator.")
+                .evidence(format!("requestedExecutionLevel level=\"{l}\"")),
+            );
+        }
+        if extra("Manifest: uiAccess") == Some("true") {
+            out.finding(
+                Finding::new(
+                    "BIN-PE-MANIFEST-UIACCESS",
+                    Severity::Low,
+                    "privilege",
+                    "Manifest requests uiAccess (can drive other applications' windows)",
+                )
+                .evidence("uiAccess=\"true\""),
+            );
+        }
+
+        // .NET: the metadata names everything the CIL code defines and depends on.
+        if let Some(dn) = &b.dotnet {
+            let mut kv = vec![
+                ("Runtime".to_string(), dn.runtime.clone()),
+                (
+                    "Assembly".to_string(),
+                    dn.assembly
+                        .as_ref()
+                        .map(|(n, v)| format!("{n} {v}"))
+                        .unwrap_or_else(|| "(module only)".into()),
+                ),
+                ("Types".to_string(), dn.type_count.to_string()),
+                ("Methods".to_string(), dn.method_count.to_string()),
+                ("IL only".to_string(), dn.il_only.to_string()),
+                (
+                    "Strong-name signed".to_string(),
+                    dn.strong_named.to_string(),
+                ),
+                (
+                    "String literals".to_string(),
+                    dn.user_strings.len().to_string(),
+                ),
+            ];
+            if !dn.pinvokes.is_empty() {
+                kv.push((
+                    "P/Invoke imports".to_string(),
+                    dn.pinvokes.len().to_string(),
+                ));
+            }
+            out.section(Section::kv("binary.dotnet", ".NET assembly", kv).with_data(dn));
+            if !dn.assembly_refs.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.refs",
+                    "Referenced assemblies",
+                    &["assembly", "version"],
+                    dn.assembly_refs
+                        .iter()
+                        .map(|(n, v)| vec![n.clone(), v.clone()])
+                        .collect(),
+                    opts.max_rows,
+                ));
+            }
+            if !dn.pinvokes.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.pinvoke",
+                    "P/Invoke (native functions called from managed code)",
+                    &["module", "function", "managed method"],
+                    dn.pinvokes
+                        .iter()
+                        .map(|(m, f, n)| vec![m.clone(), f.clone(), n.clone()])
+                        .collect(),
+                    opts.max_rows,
+                ));
+            }
+            if !dn.types.is_empty() {
+                out.section(Section::table(
+                    "binary.dotnet.types",
+                    format!("Types ({})", dn.type_count),
+                    &["type"],
+                    dn.types.iter().map(|t| vec![t.clone()]).collect(),
+                    opts.max_rows,
+                ));
+            }
+        }
+
+        // Go embeds its own bill of materials: main module, every dependency, build flags.
+        if let Some(go) = b.go.as_ref().filter(|g| !g.go_version.is_empty()) {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            if let Some((m, v)) = &go.module {
+                rows.push(vec!["main module".into(), m.clone(), v.clone()]);
+            }
+            for (m, v) in &go.deps {
+                rows.push(vec!["dependency".into(), m.clone(), v.clone()]);
+            }
+            for (k, v) in &go.settings {
+                rows.push(vec!["build setting".into(), k.clone(), v.clone()]);
+            }
+            out.section(
+                Section::table(
+                    "binary.go",
+                    format!("Go build info ({})", go.go_version),
+                    &["kind", "name", "value"],
+                    rows,
+                    opts.max_rows,
+                )
+                .with_data(go),
+            );
+            if let Some((_, v)) = go.settings.iter().find(|(k, _)| k == "vcs.modified") {
+                if v == "true" {
+                    out.finding(Finding::new(
+                        "BIN-GO-DIRTY-BUILD",
+                        Severity::Info,
+                        "provenance",
+                        "Built from a working tree with uncommitted changes (vcs.modified=true)",
+                    ));
+                }
+            }
+        }
 
         let rows = b
             .sections
@@ -202,12 +335,8 @@ impl Analyzer for Hashes {
         15
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let bin = if native(a) {
-            Binary::parse(a.data()).ok()
-        } else {
-            None
-        };
-        let fp = fingerprint::compute(a.data(), bin.as_ref());
+        let bin = if native(a) { Binary::of(a).ok() } else { None };
+        let fp = fingerprint::compute(a.data(), bin.as_deref());
         let mut kv = vec![
             ("MD5", fp.md5.clone()),
             ("SHA-1", fp.sha1.clone()),
@@ -248,7 +377,7 @@ impl Analyzer for Checksec {
         20
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let mut out = AnalyzerOutput::new();
         let rows = b
             .mitigations
@@ -360,7 +489,7 @@ impl Analyzer for Packer {
         25
     }
     fn analyze(&self, a: &Artifact, _: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let v = packer::detect(&b, a.data());
         let mut out = AnalyzerOutput::new();
         let mut kv = vec![
@@ -421,9 +550,7 @@ impl Analyzer for Capabilities {
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
         let imports = if native(a) {
-            Binary::parse(a.data())
-                .map(|b| b.import_names())
-                .unwrap_or_default()
+            Binary::of(a).map(|b| b.import_names()).unwrap_or_default()
         } else if a.kind() == ArtifactKind::Wasm {
             crate::wasm::parse(a.data())
                 .map(|m| m.imports.into_iter().map(|i| i.name).collect())
@@ -680,7 +807,7 @@ impl Analyzer for Functions {
         50
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
-        let b = Binary::parse(a.data())?;
+        let b = Binary::of(a)?;
         let prog = functions::analyze(&b, a.data(), opts);
         let mut out = AnalyzerOutput::new();
         if prog.unsupported_arch {
@@ -766,6 +893,22 @@ impl Analyzer for Functions {
                 ),
             ],
         ));
+        if prog.functions.len() >= opts.max_functions {
+            out.finding(
+                Finding::new(
+                    "BIN-ANALYSIS-PARTIAL",
+                    Severity::Info,
+                    "analysis",
+                    format!(
+                        "Function discovery stopped at the {} function limit",
+                        opts.max_functions
+                    ),
+                )
+                .describe(
+                    "Code recovery covers part of the binary. Raise the limit with --max-functions to explore all of it (slower).",
+                ),
+            );
+        }
         out.section(Section::table(
             "binary.functions",
             "Functions (largest first)",
@@ -940,18 +1083,14 @@ impl Analyzer for Carve {
     }
     fn supports(&self, a: &Artifact) -> bool {
         a.kind() == ArtifactKind::Blob
-            || (native(a)
-                && Binary::parse(a.data())
-                    .ok()
-                    .and_then(|b| b.overlay_offset)
-                    .is_some())
+            || (native(a) && Binary::of(a).ok().and_then(|b| b.overlay_offset).is_some())
     }
     fn priority(&self) -> i32 {
         60
     }
     fn analyze(&self, a: &Artifact, opts: &AnalysisOptions) -> Result<AnalyzerOutput> {
         let (base, data) = if native(a) {
-            let o = Binary::parse(a.data())?.overlay_offset.unwrap_or(0) as usize;
+            let o = Binary::of(a)?.overlay_offset.unwrap_or(0) as usize;
             (o as u64, &a.data()[o..])
         } else {
             (0, a.data())

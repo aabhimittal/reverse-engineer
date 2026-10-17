@@ -411,3 +411,44 @@ fn web_asar_extracts_and_refuses_other_inputs() {
         .assert()
         .failure();
 }
+
+#[test]
+fn compare_reports_gates_on_regressions() {
+    let d = tempfile::tempdir().unwrap();
+    let save = |name: &str| {
+        let p = d.path().join(format!("{name}.json"));
+        let s = stdout(rex().args(["analyze", "-f", "json"]).arg(fx(name)));
+        std::fs::write(&p, s).unwrap();
+        p
+    };
+    let (good, bad) = (save("crackme.elf"), save("vuln.elf"));
+    // Same report twice: nothing changed, nothing to fail on.
+    let same = stdout(
+        rex()
+            .args(["compare", "--fail-on", "low"])
+            .arg(&good)
+            .arg(&good),
+    );
+    assert!(same.contains("no findings"), "{same}");
+    // Hardened → unhardened: NX/PIE/RELRO regressions are new high/medium findings.
+    let out = rex()
+        .args(["compare", "-f", "json", "--fail-on", "high"])
+        .arg(&good)
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ids: Vec<&str> = v[0]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"COMPARE-NEW-BIN-MITIGATION-NX"), "{ids:?}");
+    // Garbage in is a clean error.
+    let junk = d.path().join("junk.json");
+    std::fs::write(&junk, "not json").unwrap();
+    let e = rex().arg("compare").arg(&junk).arg(&good).output().unwrap();
+    assert_eq!(e.status.code(), Some(1));
+}

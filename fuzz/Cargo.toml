@@ -10,8 +10,13 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 rex-core = { path = "../crates/rex-core" }
-rex-binary = { path = "../crates/rex-binary" }
+rex-binary = { path = "../crates/rex-binary", features = ["multiarch"] }
+rex-engine = { path = "../crates/rex-engine" }
 rex-web = { path = "../crates/rex-web" }
+
+[lib]
+name = "rex_fuzz"
+path = "src/lib.rs"
 
 [workspace]
 
@@ -42,5 +47,11 @@ doc = false
 [[bin]]
 name = "wasm_asar"
 path = "fuzz_targets/wasm_asar.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "analyze_all"
+path = "fuzz_targets/analyze_all.rs"
 test = false
 doc = false
