@@ -150,13 +150,20 @@ const MAX_FUNCS: usize = 500_000;
 /// Read function entries and names from the pclntab, wherever it is in the file.
 ///
 /// `hint` is the file offset of a `.gopclntab`/`__gopclntab` section when the container names
-/// one; otherwise the file is searched for the table's magic and header.
-pub fn functions(data: &[u8], hint: Option<usize>, little_endian: bool) -> Vec<GoFunc> {
+/// one; otherwise the file is searched for the table's magic and header. `text` is the address
+/// of the text section: Go 1.27 stopped storing it in the header (the field reads 0), and
+/// function entries are offsets from it.
+pub fn functions(
+    data: &[u8],
+    hint: Option<usize>,
+    little_endian: bool,
+    text: Option<u64>,
+) -> Vec<GoFunc> {
     // One budget of function entries across every candidate examined, so a file full of
     // plausible-looking fake headers cannot multiply the work.
     let mut budget = 2 * MAX_FUNCS;
     if let Some(off) = hint {
-        if let Some(f) = parse_pclntab(data, off, little_endian, &mut budget) {
+        if let Some(f) = parse_pclntab(data, off, little_endian, text, &mut budget) {
             return f;
         }
     }
@@ -185,7 +192,7 @@ pub fn functions(data: &[u8], hint: Option<usize>, little_endian: bool) -> Vec<G
             if tried > MAX_CANDIDATES {
                 return best;
             }
-            if let Some(f) = parse_pclntab(data, off, little_endian, &mut budget) {
+            if let Some(f) = parse_pclntab(data, off, little_endian, text, &mut budget) {
                 // The first table that validates is the table; Go binaries carry one.
                 return f;
             }
@@ -197,7 +204,13 @@ pub fn functions(data: &[u8], hint: Option<usize>, little_endian: bool) -> Vec<G
     best
 }
 
-fn parse_pclntab(data: &[u8], off: usize, le: bool, budget: &mut usize) -> Option<Vec<GoFunc>> {
+fn parse_pclntab(
+    data: &[u8],
+    off: usize,
+    le: bool,
+    text_hint: Option<u64>,
+    budget: &mut usize,
+) -> Option<Vec<GoFunc>> {
     let t = data.get(off..)?;
     let rd32 = |o: usize| -> Option<u32> {
         let b: [u8; 4] = t.get(o..o + 4)?.try_into().ok()?;
@@ -243,7 +256,11 @@ fn parse_pclntab(data: &[u8], off: usize, le: bool, budget: &mut usize) -> Optio
     match magic {
         0xffff_fff1 | 0xffff_fff0 => {
             // nfunc, nfiles, textStart, funcnametab, cutab, filetab, pctab, functab offsets.
-            let text = word(2)?;
+            // Go 1.27+ writes 0 for textStart; the text section's address is the same value.
+            let text = match word(2)? {
+                0 => text_hint?,
+                t => t,
+            };
             let names = usize::try_from(word(3)?).ok()?;
             let functab = usize::try_from(word(7)?).ok()?;
             // Reject a fake header cheaply: the first entries must resolve to names, in order.
@@ -345,7 +362,7 @@ mod tests {
         d[107] = 8;
         d[106] = 1;
         d[108] = 0xff; // nfunc enormous
-        assert!(functions(&d, None, true).is_empty());
+        assert!(functions(&d, None, true, None).is_empty());
         assert!(build_info(&d).is_none());
     }
 }
